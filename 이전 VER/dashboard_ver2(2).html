@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>26SS 생산 스케줄 대시보드 (VER.2)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7fb;
+        --card: #ffffff;
+        --card-secondary: #e5e7eb;
+        --text: #1f2933;
+        --muted: #5f6b7c;
+        --target-48-color: #93c5fd;
+        --actual-48-color: #3b82f6;
+        --target-49-color: #6ee7b7;
+        --actual-49-color: #10b981;
+        --target-total-color: #6366f1;
+        --actual-total-color: #4f46e5;
+        font-family: "Pretendard", "Segoe UI", -apple-system, BlinkMacSystemFont,
+          sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 20px;
+        background: var(--bg);
+        color: var(--text);
+        overflow-x: hidden; /* 가로 스크롤 방지 */
+      }
+      header {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      h1 {
+        margin: 0;
+        font-weight: 700;
+      }
+      h2 {
+        font-size: 1.1rem;
+        margin: 0 0 15px;
+        font-weight: 600;
+      }
+      .card {
+        background: var(--card);
+        padding: 20px;
+        border-radius: 14px;
+        box-shadow: 0 7px 25px rgba(15, 23, 42, 0.12);
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        overflow: hidden;
+      }
+      .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 20px;
+        margin-bottom: 20px;
+      }
+      .kpi-card {
+        background: var(--card);
+        border-radius: 14px;
+        padding: 20px;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+        text-align: center;
+      }
+      .kpi-label {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .kpi-value {
+        margin-top: 8px;
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: var(--text);
+      }
+      .main-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 20px;
+      }
+      .col-span-2 {
+        grid-column: span 2;
+      }
+      canvas {
+        width: 100%;
+        display: block; /* 인라인 캔버스 기본 여백 제거 */
+      }
+      .sub-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      select {
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(15, 23, 42, 0.15);
+        font-size: 0.95rem;
+        background: #fff;
+      }
+      @media (max-width: 960px) {
+        .col-span-2 {
+          grid-column: span 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>26SS MLB 생산 스케줄 대시보드</h1>
+    </header>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">26SS 총 목표 수량</div>
+        <div class="kpi-value" id="kpi-total">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">현재 출고 완료 수량</div>
+        <div class="kpi-value" id="kpi-actual">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">전체 진행률</div>
+        <div class="kpi-value" id="kpi-pct">-</div>
+      </div>
+    </div>
+
+    <div class="main-grid">
+      <div class="card">
+        <h2>전체 출고 진행률</h2>
+        <canvas id="totalProgress" height="320"></canvas>
+      </div>
+
+      <div class="card col-span-2">
+        <h2>국가별 출고 목표 대비 현황</h2>
+        <canvas id="chart-nations" height="320"></canvas>
+      </div>
+
+      <div class="card">
+        <h2>아이템별 출고 목표 대비</h2>
+        <canvas id="chart-items" height="320"></canvas>
+      </div>
+
+      <div class="card col-span-2">
+        <h2>복종별 출고 목표 대비</h2>
+        <canvas id="chart-categories" height="320"></canvas>
+      </div>
+
+      <div class="card">
+        <div class="sub-header">
+          <h2>세부 복종별 현황</h2>
+          <select id="subcategory-select"></select>
+        </div>
+        <canvas id="chart-subcategories" height="320"></canvas>
+      </div>
+    </div>
+
+    <script>
+      Chart.register(ChartDataLabels);
+
+      const DATA_URL = "http://localhost:8000/api/quantity";
+      const SUBCATEGORY_PRIORITY = ["TS", "MT", "PT"];
+
+      const palette = {
+        target48: "var(--target-48-color)",
+        actual48: "var(--actual-48-color)",
+        target49: "var(--target-49-color)",
+        actual49: "var(--actual-49-color)",
+        totalTarget: "var(--target-total-color)",
+        totalActual: "var(--actual-total-color)",
+      };
+
+      const fmt = new Intl.NumberFormat("ko-KR");
+      const pct = new Intl.NumberFormat("ko-KR", {
+        style: "percent",
+        minimumFractionDigits: 1,
+      });
+
+      const charts = {};
+      let currentSubSelection = null;
+
+      const datasetLabelFormatter = (value, context) => {
+        const pctSeries = context.dataset.pctData;
+        const pctValue =
+          pctSeries && pctSeries[context.dataIndex] != null
+            ? pct.format(pctSeries[context.dataIndex])
+            : null;
+        const qty = fmt.format(value ?? 0);
+        return pctValue ? `${qty} (${pctValue})` : qty;
+      };
+
+      // 막대 데이터셋 설정 (간격 조정 포함)
+      const buildDataset = (rows, { key, pctKey, label, color }) => ({
+        label,
+        data: rows.map((r) => r[key] ?? 0),
+        pctData: pctKey ? rows.map((r) => r[pctKey] ?? null) : null,
+        backgroundColor: color,
+        borderRadius: 10,
+        barThickness: 18,
+        maxBarThickness: 28,
+        categoryPercentage: 0.9,
+        barPercentage: 0.9,
+      });
+
+      const destroyChart = (name) => {
+        if (charts[name]) {
+          charts[name].destroy();
+          delete charts[name];
+        }
+      };
+
+      async function loadData() {
+        const resp = await fetch(DATA_URL);
+        if (!resp.ok) {
+          throw new Error("데이터를 불러올 수 없습니다.");
+        }
+        return resp.json();
+      }
+
+      function updateKpis(totalRow) {
+        if (!totalRow) {
+          ["kpi-total", "kpi-actual", "kpi-pct"].forEach(
+            (id) => (document.getElementById(id).textContent = "-")
+          );
+          return;
+        }
+        const totalQty = totalRow.total_qty ?? 0;
+        const actualQty =
+          (totalRow.actual_48 ?? 0) + (totalRow.actual_49 ?? 0);
+        const progress = totalQty ? actualQty / totalQty : 0;
+
+        document.getElementById("kpi-total").textContent = fmt.format(totalQty);
+        document.getElementById("kpi-actual").textContent = fmt.format(actualQty);
+        document.getElementById("kpi-pct").textContent = pct.format(progress);
+      }
+
+      function renderDonut(totalRow) {
+        const target = totalRow?.total_qty ?? 0;
+        const actual =
+          (totalRow?.actual_48 ?? 0) + (totalRow?.actual_49 ?? 0);
+        const remaining = Math.max(target - actual, 0);
+
+        destroyChart("totalProgress");
+        charts.totalProgress = new Chart(
+          document.getElementById("totalProgress"),
+          {
+            type: "doughnut",
+            data: {
+              labels: ["Completed", "Remaining"],
+              datasets: [
+                {
+                  data: [actual, remaining],
+                  backgroundColor: [
+                    palette.totalActual,
+                    "var(--card-secondary)",
+                  ],
+                  borderWidth: 4,
+                  borderColor: "#fff",
+                  hoverOffset: 8,
+                },
+              ],
+            },
+            options: {
+              responsive: false,        // 고정 크기
+              maintainAspectRatio: false,
+              cutout: "70%",
+              plugins: {
+                legend: { position: "bottom", labels: { usePointStyle: true } },
+                datalabels: {
+                  color: "#0f172a",
+                  font: { weight: "bold" },
+                  formatter: (value, ctx) => {
+                    const total = ctx.dataset.data.reduce((sum, v) => sum + v, 0);
+                    const percent = total ? pct.format(value / total) : "0%";
+                    return `${percent}\n${fmt.format(value)}`;
+                  },
+                },
+              },
+            },
+          }
+        );
+      }
+
+      function renderHorizontalChart(canvasId, labels, datasets) {
+        destroyChart(canvasId);
+        charts[canvasId] = new Chart(document.getElementById(canvasId), {
+          type: "bar",
+          data: { labels, datasets },
+          options: {
+            indexAxis: "y",
+            responsive: false,       // 고정 크기
+            maintainAspectRatio: false,
+            layout: { padding: { top: 10, bottom: 20 } },
+            scales: {
+              x: {
+                beginAtZero: true,
+                ticks: { callback: (value) => fmt.format(value) },
+                grid: { drawBorder: false },
+              },
+              y: {
+                ticks: { autoSkip: false },
+                grid: { display: false },
+              },
+            },
+            interaction: { mode: "nearest", intersect: false, axis: "y" },
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { usePointStyle: true },
+              },
+              datalabels: {
+                anchor: "end",
+                align: "end",
+                color: "#0f172a",
+                formatter: datasetLabelFormatter,
+              },
+            },
+          },
+        });
+      }
+
+      function renderNations(rows) {
+        const data = rows.filter(
+          (row) => (row.code || row.country || "").toUpperCase() !== "TOTAL"
+        );
+        const labels = data.map((row) => row.code || row.country || "-");
+        const datasets = [
+          buildDataset(data, {
+            key: "target_48",
+            pctKey: "target_48_pct",
+            label: "48주 목표",
+            color: palette.target48,
+          }),
+          buildDataset(data, {
+            key: "actual_48",
+            pctKey: "actual_48_pct",
+            label: "48주 실적",
+            color: palette.actual48,
+          }),
+        ];
+        renderHorizontalChart("chart-nations", labels, datasets);
+      }
+
+      function renderItems(rows) {
+        const labels = rows.map((row) => row.item || "-");
+        const datasets = [
+          buildDataset(rows, {
+            key: "target_48",
+            pctKey: "target_48_pct",
+            label: "48주 목표",
+            color: palette.target48,
+          }),
+          buildDataset(rows, {
+            key: "actual_48",
+            pctKey: "actual_48_pct",
+            label: "48주 실적",
+            color: palette.actual48,
+          }),
+        ];
+        renderHorizontalChart("chart-items", labels, datasets);
+      }
+
+      function renderCategories(rows) {
+        const data = rows.filter(
+          (row) => (row.category || "").toUpperCase() !== "TOTAL"
+        );
+        const labels = data.map((row) => row.category || "-");
+        const datasets = [
+          buildDataset(data, {
+            key: "target_48",
+            pctKey: "target_48_pct",
+            label: "48주 목표",
+            color: palette.target48,
+          }),
+          buildDataset(data, {
+            key: "actual_48",
+            pctKey: "actual_48_pct",
+            label: "48주 실적",
+            color: palette.actual48,
+          }),
+        ];
+        renderHorizontalChart("chart-categories", labels, datasets);
+      }
+
+      function initSubcategorySelect(rows) {
+        const select = document.getElementById("subcategory-select");
+        const labels = rows.map(
+          (row) =>
+            row.subcategory || row.category || row.item || row.code || "-"
+        );
+        const uniqueLabels = [...new Set(labels)];
+
+        const preferred =
+          SUBCATEGORY_PRIORITY.find((name) =>
+            uniqueLabels.includes(name)
+          ) || uniqueLabels[0];
+        if (!currentSubSelection) {
+          currentSubSelection = preferred;
+        }
+        if (!uniqueLabels.includes(currentSubSelection)) {
+          currentSubSelection = preferred;
+        }
+
+        select.innerHTML = uniqueLabels
+          .map(
+            (label) =>
+              `<option value="${label}">${label}</option>`
+          )
+          .join("");
+
+        select.value = currentSubSelection;
+        select.onchange = (e) => {
+          currentSubSelection = e.target.value;
+          renderSubcategoryChart(rows, currentSubSelection);
+        };
+      }
+
+      function renderSubcategoryChart(rows, label) {
+        destroyChart("chart-subcategories");
+        if (!rows.length) {
+          charts["chart-subcategories"] = new Chart(
+            document.getElementById("chart-subcategories"),
+            { type: "bar", data: { labels: [], datasets: [] } }
+          );
+          return;
+        }
+
+        const targetRow =
+          rows.find(
+            (row) =>
+              (row.subcategory || row.category || row.item || row.code || "-") ===
+              label
+          ) || rows[0];
+
+        const targetPct = [
+          targetRow?.target_48_pct ?? null,
+          targetRow?.target_49_pct ?? null,
+        ];
+        const actualPct = [
+          targetRow?.actual_48_pct ?? null,
+          targetRow?.actual_49_pct ?? null,
+        ];
+
+        charts["chart-subcategories"] = new Chart(
+          document.getElementById("chart-subcategories"),
+          {
+            type: "bar",
+            data: {
+              labels: ["48주차", "49주차"],
+              datasets: [
+                {
+                  label: "Target",
+                  data: [targetRow?.target_48 ?? 0, targetRow?.target_49 ?? 0],
+                  pctData: targetPct,
+                  backgroundColor: palette.target48,
+                  borderRadius: 12,
+                  barThickness: 30,
+                },
+                {
+                  label: "Actual",
+                  data: [targetRow?.actual_48 ?? 0, targetRow?.actual_49 ?? 0],
+                  pctData: actualPct,
+                  backgroundColor: palette.actual48,
+                  borderRadius: 12,
+                  barThickness: 30,
+                },
+              ],
+            },
+            options: {
+              responsive: false,
+              maintainAspectRatio: false,
+              scales: {
+                y: {
+                  beginAtZero: true,
+                  ticks: { callback: (value) => fmt.format(value) },
+                  grid: { drawBorder: false },
+                },
+                x: { grid: { display: false } },
+              },
+              plugins: {
+                legend: {
+                  position: "bottom",
+                  labels: { usePointStyle: true },
+                },
+                datalabels: {
+                  anchor: "end",
+                  align: "start",
+                  offset: -6,
+                  color: "#0f172a",
+                  formatter: datasetLabelFormatter,
+                },
+              },
+            },
+          }
+        );
+      }
+
+      async function initDashboard() {
+        try {
+          const data = await loadData();
+          const nations = data.nations || [];
+          const items = data.items || [];
+          const categories = data.categories || [];
+          const subcategories = data.sub_categories || data.subCategories || [];
+
+          const totalRow = nations.find(
+            (row) => (row.code || "").toUpperCase() === "TOTAL"
+          );
+
+          updateKpis(totalRow);
+          renderDonut(totalRow);
+          renderNations(nations);
+          renderItems(items);
+          renderCategories(categories);
+          initSubcategorySelect(subcategories.length ? subcategories : categories);
+          renderSubcategoryChart(
+            subcategories.length ? subcategories : categories,
+            currentSubSelection
+          );
+        } catch (error) {
+          console.error(error);
+          alert("대시보드 데이터를 불러오지 못했습니다. 서버 상태를 확인하세요.");
+        }
+      }
+
+      initDashboard();
+      // setInterval(initDashboard, 60_000);
+    </script>
+  </body>
+</html>

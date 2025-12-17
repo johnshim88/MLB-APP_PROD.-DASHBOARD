@@ -41,7 +41,7 @@ def download_from_onedrive_share_link(share_link: str, output_path: Path) -> boo
             with httpx.Client(follow_redirects=True, timeout=30.0) as client:
                 try:
                     # 먼저 링크에 접근하여 리다이렉트 확인
-                    response = client.get(share_link, allow_redirects=True)
+                    response = client.get(share_link)
                     final_url = str(response.url)
                     print(f"SharePoint redirect URL: {final_url}")
                     
