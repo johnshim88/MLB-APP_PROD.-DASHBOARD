@@ -404,35 +404,26 @@
           "Authorization": `Basic ${encodedPassword}`
         };
 
-        // 테스트 요청으로 인증 확인
-        fetch(`${API_BASE_URL}/health`, {
+        // 인증이 필요한 API 엔드포인트로 인증 확인
+        fetch(`${API_BASE_URL}/api/sheets`, {
           headers: AUTH_HEADERS
         })
-          .then(() => {
-            // 인증 성공
-            document.getElementById("login-overlay").classList.add("hidden");
-            document.getElementById("dashboard-content").classList.remove("hidden");
-            initDashboard();
+          .then(resp => {
+            if (resp.ok) {
+              // 인증 성공
+              document.getElementById("login-overlay").classList.add("hidden");
+              document.getElementById("dashboard-content").classList.remove("hidden");
+              initDashboard();
+            } else {
+              // 인증 실패
+              errorDiv.classList.add("show");
+              passwordInput.value = "";
+            }
           })
           .catch(() => {
-            // 인증 실패 - 실제 API 엔드포인트로 테스트
-            fetch(`${API_BASE_URL}/api/quantity`, {
-              headers: AUTH_HEADERS
-            })
-              .then(resp => {
-                if (resp.ok) {
-                  document.getElementById("login-overlay").classList.add("hidden");
-                  document.getElementById("dashboard-content").classList.remove("hidden");
-                  initDashboard();
-                } else {
-                  errorDiv.classList.add("show");
-                  passwordInput.value = "";
-                }
-              })
-              .catch(() => {
-                errorDiv.classList.add("show");
-                passwordInput.value = "";
-              });
+            // 네트워크 오류 또는 인증 실패
+            errorDiv.classList.add("show");
+            passwordInput.value = "";
           });
       }
 
