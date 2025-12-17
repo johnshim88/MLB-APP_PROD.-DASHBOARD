@@ -13,7 +13,10 @@
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
-    <script src="config.js"></script>
+    <script>
+      // API 설정 (인라인으로 포함하여 배포 문제 방지)
+      window.API_URL = window.API_URL || "https://mlb-app-prod-dashboard.onrender.com";
+    </script>
     <style>
       :root {
         color-scheme: light;
@@ -404,24 +407,34 @@
           "Authorization": `Basic ${encodedPassword}`
         };
 
+        // 디버깅: API URL 및 헤더 확인
+        console.log("API URL:", `${API_BASE_URL}/api/sheets`);
+        console.log("Auth Headers:", AUTH_HEADERS);
+
         // 인증이 필요한 API 엔드포인트로 인증 확인
         fetch(`${API_BASE_URL}/api/sheets`, {
           headers: AUTH_HEADERS
         })
           .then(resp => {
+            console.log("Response status:", resp.status);
+            console.log("Response ok:", resp.ok);
             if (resp.ok) {
               // 인증 성공
               document.getElementById("login-overlay").classList.add("hidden");
               document.getElementById("dashboard-content").classList.remove("hidden");
               initDashboard();
             } else {
-              // 인증 실패
-              errorDiv.classList.add("show");
-              passwordInput.value = "";
+              // 인증 실패 - 응답 본문 확인
+              resp.text().then(text => {
+                console.error("Auth failed. Response:", text);
+                errorDiv.classList.add("show");
+                passwordInput.value = "";
+              });
             }
           })
-          .catch(() => {
+          .catch(err => {
             // 네트워크 오류 또는 인증 실패
+            console.error("Fetch error:", err);
             errorDiv.classList.add("show");
             passwordInput.value = "";
           });
