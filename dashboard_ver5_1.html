@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>26SS 생산 스케줄 대시보드 (VER.5.1)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7fb;
+        --card: #ffffff;
+        --card-secondary: #e5e7eb;
+        --text: #1f2933;
+        --muted: #5f6b7c;
+        --target-48-color: #1d4ed8; /* 진파랑 (Target) */
+        --actual-48-color: #93c5fd; /* 연파랑 (Actual) */
+        --tab-active: #1d4ed8;
+        --tab-inactive: #9ca3af;
+        font-family: "Pretendard", "Segoe UI", -apple-system, BlinkMacSystemFont,
+          sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 20px;
+        background: var(--bg);
+        color: var(--text);
+        overflow-x: hidden;
+      }
+      header {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      h1 {
+        margin: 0;
+        font-weight: 700;
+      }
+      h2 {
+        font-size: 1.1rem;
+        margin: 0 0 15px;
+        font-weight: 600;
+      }
+      .card {
+        background: var(--card);
+        padding: 20px;
+        border-radius: 14px;
+        box-shadow: 0 7px 25px rgba(15, 23, 42, 0.12);
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        overflow: hidden;
+      }
+      .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 20px;
+        margin-bottom: 20px;
+      }
+      .kpi-card {
+        background: var(--card);
+        border-radius: 14px;
+        padding: 20px;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+        text-align: center;
+      }
+      .kpi-label {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .kpi-value {
+        margin-top: 8px;
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: var(--text);
+      }
+      .main-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 20px;
+      }
+      .col-span-2 {
+        grid-column: span 2;
+      }
+      canvas {
+        width: 100% !important;
+        display: block;
+        max-width: 100%;
+      }
+      .chart-container {
+        position: relative;
+        width: 100%;
+        height: 320px;
+        min-height: 320px;
+      }
+      .sub-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      select {
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(15, 23, 42, 0.15);
+        font-size: 0.95rem;
+        background: #fff;
+      }
+      .week-current {
+        margin-left: 4px;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .tab-container {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 20px;
+        padding: 10px;
+      }
+      .tab-button {
+        padding: 12px 24px;
+        border: 2px solid var(--tab-inactive);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--tab-inactive);
+        font-size: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+      .tab-button:hover {
+        border-color: var(--tab-active);
+        color: var(--tab-active);
+      }
+      .tab-button.active {
+        border-color: var(--tab-active);
+        background: var(--tab-active);
+        color: white;
+      }
+      .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(245, 247, 251, 0.9);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s ease;
+      }
+      .loading-overlay.show {
+        opacity: 1;
+        pointer-events: all;
+      }
+      .loading-spinner {
+        width: 50px;
+        height: 50px;
+        border: 4px solid var(--card-secondary);
+        border-top-color: var(--tab-active);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .loading-text {
+        margin-top: 20px;
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--text);
+      }
+      @media (max-width: 960px) {
+        .col-span-2 {
+          grid-column: span 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>26SS MLB 생산 스케줄 대시보드</h1>
+    </header>
+
+    <!-- 기준 선택 탭 -->
+    <div class="tab-container">
+      <button class="tab-button active" id="tab-quantity" data-type="quantity">
+        수량 기준
+      </button>
+      <button class="tab-button" id="tab-style-count" data-type="style-count">
+        스타일수 기준
+      </button>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label" id="kpi-total-label">26SS 총 목표 수량</div>
+        <div class="kpi-value" id="kpi-total">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">
+          현재 출고 완료 <span id="kpi-unit-label">수량</span>(<span id="kpi-week-label"></span> 기준)
+        </div>
+        <div class="kpi-value" id="kpi-actual">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">전체 진행률(<span id="kpi-week-label2"></span> 기준)</div>
+        <div class="kpi-value" id="kpi-pct">-</div>
+        <div class="kpi-sub-label" style="margin-top: 4px; font-size: 0.85rem; color: var(--muted);">
+          주차 목표진행률: <span id="kpi-target-pct">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 주차 선택 라디오 버튼 추가 -->
+    <div id="week-select-container" style="text-align: center; margin-bottom: 20px;">
+      <!-- 동적으로 생성됨 -->
+    </div>
+
+    <div class="main-grid">
+      <div class="card">
+        <h2>전체 출고 진행률<span class="week-current"></span></h2>
+        <div class="chart-container">
+          <canvas id="totalProgress"></canvas>
+        </div>
+      </div>
+
+      <div class="card col-span-2">
+        <h2>국가별 출고 목표 대비 현황<span class="week-current"></span></h2>
+        <div class="chart-container">
+          <canvas id="chart-nations"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>아이템별 출고 목표 대비<span class="week-current"></span></h2>
+        <div class="chart-container">
+          <canvas id="chart-items"></canvas>
+        </div>
+      </div>
+
+      <div class="card col-span-2">
+        <h2>복종별 출고 목표 대비<span class="week-current"></span></h2>
+        <div class="chart-container">
+          <canvas id="chart-categories"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sub-header">
+          <h2>세부 복종별 현황 <span id="week-range"></span></h2>
+          <select id="subcategory-select"></select>
+        </div>
+        <div class="chart-container">
+          <canvas id="chart-subcategories"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 로딩 오버레이 -->
+    <div id="loading-overlay" class="loading-overlay">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">데이터를 불러오는 중...</div>
+    </div>
+
+    <script>
+      Chart.register(ChartDataLabels);
+
+      // 주차 정보는 API에서 동적으로 받아옴
+      let CURRENT_WEEK = null; // 금주 (API에서 받아옴)
+      let NEXT_WEEK = null;    // 차주 (API에서 받아옴)
+      let WEEK_INFO = null;    // 주차 정보 저장
+      let CURRENT_TYPE = "quantity"; // "quantity" or "style-count"
+      let DATA_URL = "http://localhost:8000/api/quantity"; // 동적으로 변경됨
+      const SUBCATEGORY_PRIORITY = ["TS", "MT", "PT"];
+
+      const palette = {
+        target: getComputedStyle(document.documentElement)
+          .getPropertyValue("--target-48-color")
+          .trim(),
+        actual: getComputedStyle(document.documentElement)
+          .getPropertyValue("--actual-48-color")
+          .trim(),
+      };
+
+      const fmt = new Intl.NumberFormat("ko-KR");
+      const pct = new Intl.NumberFormat("ko-KR", {
+        style: "percent",
+        minimumFractionDigits: 1,
+      });
+
+      const charts = {};
+      let currentSubSelection = null;
+      let cachedData = null; // 데이터 캐시
+
+      // 로딩 표시 함수
+      function showLoading() {
+        const overlay = document.getElementById("loading-overlay");
+        if (overlay) {
+          overlay.classList.add("show");
+        }
+      }
+
+      function hideLoading() {
+        const overlay = document.getElementById("loading-overlay");
+        if (overlay) {
+          overlay.classList.remove("show");
+        }
+      }
+
+      // 기준 타입 변경
+      function updateDataType(type) {
+        CURRENT_TYPE = type;
+        // API 경로는 하이픈 형식으로 변환
+        const apiPath = type === "quantity" ? "quantity" : "style-count";
+        DATA_URL = `http://localhost:8000/api/${apiPath}`;
+        
+        // 탭 버튼 업데이트
+        document.querySelectorAll(".tab-button").forEach((btn) => {
+          btn.classList.remove("active");
+        });
+        document.getElementById(`tab-${type === "quantity" ? "quantity" : "style-count"}`).classList.add("active");
+        
+        // 레이블 업데이트
+        const unitLabel = type === "quantity" ? "수량" : "스타일수";
+        document.getElementById("kpi-unit-label").textContent = unitLabel;
+        document.getElementById("kpi-total-label").textContent = `26SS 총 목표 ${unitLabel}`;
+        
+        // 데이터 다시 로드
+        cachedData = null;
+        currentSubSelection = null;
+        initDashboard();
+      }
+
+      // 기준 탭 버튼 이벤트
+      document.querySelectorAll(".tab-button").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          const type = e.target.dataset.type;
+          if (type !== CURRENT_TYPE) {
+            updateDataType(type);
+          }
+        });
+      });
+
+      // 주차 선택 라디오 버튼 동적 생성
+      function createWeekSelector(week1, week2) {
+        const container = document.getElementById("week-select-container");
+        container.innerHTML = `
+          <label style="margin-right: 20px; cursor: pointer;">
+            <input type="radio" name="week-select" value="${week1}" checked style="margin-right: 6px;" />
+            금주 (${week1}주차)
+          </label>
+          <label style="cursor: pointer;">
+            <input type="radio" name="week-select" value="${week2}" style="margin-right: 6px;" />
+            차주 (${week2}주차)
+          </label>
+        `;
+
+        // 주차 선택 이벤트 리스너 추가
+        document.querySelectorAll('input[name="week-select"]').forEach((radio) => {
+          radio.addEventListener('change', (e) => {
+            CURRENT_WEEK = parseInt(e.target.value);
+            console.log("Week changed to:", CURRENT_WEEK);
+            // 데이터를 다시 로드하지 않고 현재 데이터로 바로 렌더링
+            if (cachedData) {
+              refreshDashboardWithCurrentData(cachedData);
+            } else {
+              initDashboard(); // 캐시가 없으면 다시 로드
+            }
+          });
+        });
+      }
+
+      function updateWeekLabels() {
+        document.querySelectorAll(".week-current").forEach((el) => {
+          el.textContent = ` (${CURRENT_WEEK}주차)`;
+        });
+        document.getElementById("week-range").textContent = ` (${CURRENT_WEEK}주차)`;
+        document.getElementById("kpi-week-label").textContent = `${CURRENT_WEEK}주`;
+        document.getElementById("kpi-week-label2").textContent = `${CURRENT_WEEK}주`;
+      }
+
+      const datasetLabelFormatter = (value, context) => {
+        const pctSeries = context.dataset.pctData;
+        const pctValue =
+          pctSeries && pctSeries[context.dataIndex] != null
+            ? pct.format(pctSeries[context.dataIndex])
+            : null;
+        const qty = fmt.format(value ?? 0);
+        return pctValue ? `${qty} (${pctValue})` : qty;
+      };
+
+      const buildDataset = (rows, { key, pctKey, label, color }) => ({
+        label,
+        data: rows.map((r) => r[key] ?? 0),
+        pctData: pctKey ? rows.map((r) => r[pctKey] ?? null) : null,
+        backgroundColor: color,
+        borderRadius: 10,
+        barThickness: 18,
+        maxBarThickness: 28,
+        categoryPercentage: 0.9,
+        barPercentage: 0.9,
+      });
+
+      const destroyChart = (name) => {
+        if (charts[name]) {
+          charts[name].destroy();
+          delete charts[name];
+        }
+      };
+
+      async function loadData() {
+        const resp = await fetch(DATA_URL);
+        if (!resp.ok) {
+          throw new Error("데이터를 불러올 수 없습니다.");
+        }
+        return resp.json();
+      }
+
+      // 진행률 계산 수정: 주차 목표진행률 추가
+      function updateKpis(totalRow) {
+        if (!totalRow) {
+          console.warn("updateKpis: totalRow is null or undefined");
+          ["kpi-total", "kpi-actual", "kpi-pct", "kpi-target-pct"].forEach(
+            (id) => {
+              const el = document.getElementById(id);
+              if (el) el.textContent = "-";
+            }
+          );
+          return;
+        }
+        
+        const totalQty = totalRow.total_qty ?? 0;
+        const actualKey = `actual_${CURRENT_WEEK}`;
+        const targetPctKey = `target_${CURRENT_WEEK}_pct`;
+        
+        const actualCurrent = totalRow[actualKey] ?? 0;
+        const targetPctCurrent = totalRow[targetPctKey] ?? null;
+
+        console.log(`updateKpis for week ${CURRENT_WEEK}:`, {
+          totalQty,
+          actualKey,
+          actualCurrent,
+          targetPctKey,
+          targetPctCurrent,
+        });
+
+        const progressCurrent = totalQty && totalQty > 0 ? actualCurrent / totalQty : 0;
+
+        const kpiTotalEl = document.getElementById("kpi-total");
+        const kpiActualEl = document.getElementById("kpi-actual");
+        const kpiPctEl = document.getElementById("kpi-pct");
+        const kpiTargetPctEl = document.getElementById("kpi-target-pct");
+
+        if (kpiTotalEl) {
+          kpiTotalEl.textContent = fmt.format(totalQty);
+        }
+        if (kpiActualEl) {
+          kpiActualEl.textContent = fmt.format(actualCurrent);
+        }
+        if (kpiPctEl) {
+          kpiPctEl.textContent = pct.format(progressCurrent);
+        }
+        
+        // 주차 목표진행률 표시 (G열 또는 K열)
+        if (kpiTargetPctEl) {
+          if (targetPctCurrent != null && targetPctCurrent !== undefined) {
+            kpiTargetPctEl.textContent = pct.format(targetPctCurrent);
+          } else {
+            kpiTargetPctEl.textContent = "-";
+          }
+        }
+      }
+
+      // 도넛도 CURRENT_WEEK 기준으로 동적 변경
+      function renderDonut(totalRow) {
+        const target = totalRow?.total_qty ?? 0;
+        const actualCurrent = totalRow?.[`actual_${CURRENT_WEEK}`] ?? 0;
+        const remaining = Math.max(target - actualCurrent, 0);
+
+        destroyChart("totalProgress");
+        const canvas = document.getElementById("totalProgress");
+        const container = canvas.parentElement;
+        canvas.width = container.clientWidth;
+        canvas.height = 320;
+        
+        charts.totalProgress = new Chart(canvas, {
+            type: "doughnut",
+            data: {
+              labels: [`Completed (${CURRENT_WEEK}주)`, "Remaining"],
+              datasets: [
+                {
+                  data: [actualCurrent, remaining],
+                  backgroundColor: ["#22c55e", "#ef4444"],
+                  borderWidth: 4,
+                  borderColor: "#fff",
+                  hoverOffset: 8,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              cutout: "70%",
+              plugins: {
+                legend: { position: "bottom", labels: { usePointStyle: true } },
+                datalabels: {
+                  color: "#0f172a",
+                  font: { weight: "bold" },
+                  formatter: (value, ctx) => {
+                    const total = ctx.dataset.data.reduce((sum, v) => sum + v, 0);
+                    const percent = total ? pct.format(value / total) : "0%";
+                    return `${percent}\n${fmt.format(value)}`;
+                  },
+                },
+              },
+            },
+          }
+        );
+      }
+
+      function renderHorizontalChart(canvasId, labels, datasets) {
+        destroyChart(canvasId);
+        const canvas = document.getElementById(canvasId);
+        const container = canvas.parentElement;
+        canvas.width = container.clientWidth;
+        canvas.height = 320;
+        
+        charts[canvasId] = new Chart(canvas, {
+          type: "bar",
+          data: { labels, datasets },
+          options: {
+            indexAxis: "y",
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: { padding: { top: 10, bottom: 30, right: 80 } }, // 오른쪽 여백 증가
+            scales: {
+              x: {
+                beginAtZero: true,
+                ticks: { callback: (value) => fmt.format(value) },
+                grid: { drawBorder: false },
+              },
+              y: {
+                ticks: { autoSkip: false },
+                grid: { display: false },
+              },
+            },
+            interaction: { mode: "nearest", intersect: false, axis: "y" },
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { usePointStyle: true },
+              },
+              datalabels: {
+                anchor: "end",
+                align: "end",
+                color: "#0f172a",
+                clip: false, // CN처럼 큰 값도 잘리지 않게
+                formatter: datasetLabelFormatter,
+              },
+            },
+          },
+        });
+      }
+
+      function getWeekKeys(week) {
+        return {
+          target: `target_${week}`,
+          actual: `actual_${week}`,
+          targetPct: `target_${week}_pct`,
+          actualPct: `actual_${week}_pct`,
+        };
+      }
+
+      // 국가별: 색상은 시리즈 기준으로 통일 (진파랑/연파랑)
+      function renderNations(rows) {
+        const data = rows.filter(
+          (row) => (row.code || row.country || "").toUpperCase() !== "TOTAL"
+        );
+        const labels = data.map((row) => row.code || row.country || "-");
+
+        const { target, actual, targetPct, actualPct } =
+          getWeekKeys(CURRENT_WEEK);
+
+        const datasets = [
+          buildDataset(data, {
+            key: target,
+            pctKey: targetPct,
+            label: `${CURRENT_WEEK}주 목표`,
+            color: palette.target,
+          }),
+          buildDataset(data, {
+            key: actual,
+            pctKey: actualPct,
+            label: `${CURRENT_WEEK}주 실적`,
+            color: palette.actual,
+          }),
+        ];
+        renderHorizontalChart("chart-nations", labels, datasets);
+      }
+
+      // 아이템별
+      function renderItems(rows) {
+        const labels = rows.map((row) => row.item || "-");
+
+        const { target, actual, targetPct, actualPct } =
+          getWeekKeys(CURRENT_WEEK);
+
+        const datasets = [
+          buildDataset(rows, {
+            key: target,
+            pctKey: targetPct,
+            label: `${CURRENT_WEEK}주 목표`,
+            color: palette.target,
+          }),
+          buildDataset(rows, {
+            key: actual,
+            pctKey: actualPct,
+            label: `${CURRENT_WEEK}주 실적`,
+            color: palette.actual,
+          }),
+        ];
+        renderHorizontalChart("chart-items", labels, datasets);
+      }
+
+      // 복종별
+      function renderCategories(rows) {
+        const data = rows.filter(
+          (row) => (row.category || "").toUpperCase() !== "TOTAL"
+        );
+        const labels = data.map((row) => row.category || "-");
+
+        const { target, actual, targetPct, actualPct } =
+          getWeekKeys(CURRENT_WEEK);
+
+        const datasets = [
+          buildDataset(data, {
+            key: target,
+            pctKey: targetPct,
+            label: `${CURRENT_WEEK}주 목표`,
+            color: palette.target,
+          }),
+          buildDataset(data, {
+            key: actual,
+            pctKey: actualPct,
+            label: `${CURRENT_WEEK}주 실적`,
+            color: palette.actual,
+          }),
+        ];
+        renderHorizontalChart("chart-categories", labels, datasets);
+      }
+
+      function initSubcategorySelect(rows) {
+        const select = document.getElementById("subcategory-select");
+        // O~Y열 데이터만 사용 (subcategory만)
+        const labels = rows.map(
+          (row) => row.subcategory || "-"
+        );
+        const uniqueLabels = [...new Set(labels)];
+
+        const preferred =
+          SUBCATEGORY_PRIORITY.find((name) =>
+            uniqueLabels.includes(name)
+          ) || uniqueLabels[0];
+        if (!currentSubSelection) {
+          currentSubSelection = preferred;
+        }
+        if (!uniqueLabels.includes(currentSubSelection)) {
+          currentSubSelection = preferred;
+        }
+
+        select.innerHTML = uniqueLabels
+          .map(
+            (label) =>
+              `<option value="${label}">${label}</option>`
+          )
+          .join("");
+
+        select.value = currentSubSelection;
+        select.onchange = (e) => {
+          currentSubSelection = e.target.value;
+          renderSubcategoryChart(rows, currentSubSelection);
+        };
+      }
+
+      // 세부 복종: CURRENT_WEEK만 보여줌
+      function renderSubcategoryChart(rows, label) {
+        destroyChart("chart-subcategories");
+        const canvas = document.getElementById("chart-subcategories");
+        const container = canvas.parentElement;
+        canvas.width = container.clientWidth;
+        canvas.height = 320;
+        
+        if (!rows.length) {
+          charts["chart-subcategories"] = new Chart(
+            canvas,
+            { 
+              type: "bar", 
+              data: { labels: [], datasets: [] },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+              }
+            }
+          );
+          return;
+        }
+
+        // label이 없으면 첫 번째 항목 사용 (O~Y열 데이터만 사용)
+        if (!label && rows.length > 0) {
+          label = rows[0].subcategory || "-";
+        }
+
+        const targetRow =
+          rows.find(
+            (row) => (row.subcategory || "-") === label
+          ) || rows[0];
+
+        console.log(`renderSubcategoryChart: week=${CURRENT_WEEK}, label=${label}`, {
+          targetKey: `target_${CURRENT_WEEK}`,
+          actualKey: `actual_${CURRENT_WEEK}`,
+          targetValue: targetRow?.[`target_${CURRENT_WEEK}`],
+          actualValue: targetRow?.[`actual_${CURRENT_WEEK}`],
+        });
+
+        const targetPct = targetRow?.[`target_${CURRENT_WEEK}_pct`] ?? null;
+        const actualPct = targetRow?.[`actual_${CURRENT_WEEK}_pct`] ?? null;
+        
+        const targetValue = targetRow?.[`target_${CURRENT_WEEK}`] ?? 0;
+        const actualValue = targetRow?.[`actual_${CURRENT_WEEK}`] ?? 0;
+        
+        // Y축 범위 계산 (데이터 최대값의 1.2배 또는 최소 10% 여유)
+        const maxValue = Math.max(targetValue, actualValue);
+        const yAxisMax = maxValue > 0 ? Math.ceil(maxValue * 1.2) : 10;
+        
+        // 스타일수 기준인 경우 더 세밀한 스케일링 (정수 단위)
+        const isStyleCount = CURRENT_TYPE === "style-count";
+        const yAxisMin = 0;
+        const yAxisStep = isStyleCount && maxValue < 10 
+          ? Math.max(1, Math.ceil(maxValue / 10)) 
+          : undefined;
+        
+        // 동일 선상에 배치하기 위한 Y 위치 (최대값 바의 상단 위치)
+        const labelYPosition = yAxisMax;
+
+        charts["chart-subcategories"] = new Chart(
+          canvas,
+          {
+            type: "bar",
+            data: {
+              labels: [`${CURRENT_WEEK}주차`],
+              datasets: [
+                {
+                  label: "Target",
+                  data: [targetValue],
+                  pctData: [targetPct],
+                  backgroundColor: palette.target,
+                  borderRadius: 12,
+                  barThickness: 30,
+                  datalabels: {
+                    anchor: "end",
+                    align: "left",
+                    offset: -50,
+                    color: "#0f172a",
+                    font: {
+                      weight: "bold",
+                      size: 12,
+                    },
+                    formatter: datasetLabelFormatter,
+                  },
+                },
+                {
+                  label: "Actual",
+                  data: [actualValue],
+                  pctData: [actualPct],
+                  backgroundColor: palette.actual,
+                  borderRadius: 12,
+                  barThickness: 30,
+                  datalabels: {
+                    anchor: "end",
+                    align: "right",
+                    offset: 50,
+                    color: "#0f172a",
+                    font: {
+                      weight: "bold",
+                      size: 12,
+                    },
+                    formatter: datasetLabelFormatter,
+                  },
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              layout: {
+                padding: {
+                  top: 50,
+                  bottom: 10,
+                },
+              },
+              scales: {
+                y: {
+                  beginAtZero: true,
+                  min: yAxisMin,
+                  max: yAxisMax,
+                  ticks: { 
+                    callback: (value) => fmt.format(value),
+                    stepSize: yAxisStep,
+                  },
+                  grid: { drawBorder: false },
+                },
+                x: { 
+                  grid: { display: false },
+                  categoryPercentage: 0.5,
+                  barPercentage: 0.8,
+                },
+              },
+              plugins: {
+                legend: {
+                  position: "bottom",
+                  labels: { usePointStyle: true },
+                },
+                datalabels: {
+                  // 기본적으로 표시, 각 데이터셋에서 개별 설정으로 오버라이드
+                  display: true,
+                },
+              },
+            },
+          }
+        );
+      }
+
+      function refreshDashboardWithCurrentData(data) {
+        // 캐시된 데이터로 대시보드 새로고침
+        const nations = data.nations || [];
+        const items = data.items || [];
+        const categories = data.categories || [];
+        const subcategories = data.sub_categories || data.subCategories || [];
+
+        console.log("=== Refresh Debug Info ===");
+        console.log("Refreshing dashboard with current week:", CURRENT_WEEK);
+        console.log("Current subcategory selection:", currentSubSelection);
+        console.log("Subcategories length:", subcategories.length);
+        if (subcategories.length > 0) {
+          console.log("Subcategories data:", subcategories);
+        } else {
+          console.warn("WARNING: subcategories array is empty!");
+        }
+
+        // 스타일 수 기준인 경우 items 배열에서 18행 TOTAL 찾기, 수량 기준인 경우 nations에서 찾기
+        let totalRow;
+        if (CURRENT_TYPE === "style-count") {
+          totalRow = items.find(
+            (row) => (row.item || "").toUpperCase() === "TOTAL"
+          );
+          console.log("Style-count mode: Looking for TOTAL in items array");
+          console.log("Items array:", items);
+          console.log("Total row found:", totalRow);
+        } else {
+          totalRow = nations.find(
+            (row) => (row.code || "").toUpperCase() === "TOTAL"
+          );
+        }
+
+        updateWeekLabels();
+        updateKpis(totalRow);
+        renderDonut(totalRow);
+        renderNations(nations);
+        renderItems(items);
+        renderCategories(categories);
+        
+        // 세부 복종별 차트도 현재 주차로 다시 렌더링
+        // currentSubSelection이 없으면 자동으로 선택
+        // O~Y열 데이터(subcategories)만 사용
+        if (!currentSubSelection && subcategories.length > 0) {
+          const labels = subcategories.map(
+            (row) => row.subcategory || "-"
+          );
+          const uniqueLabels = [...new Set(labels)];
+          const preferred =
+            SUBCATEGORY_PRIORITY.find((name) =>
+              uniqueLabels.includes(name)
+            ) || uniqueLabels[0];
+          currentSubSelection = preferred;
+        }
+        
+        // subcategories만 사용 (O~Y열 데이터)
+        if (subcategories.length > 0) {
+          renderSubcategoryChart(subcategories, currentSubSelection);
+        } else {
+          // 데이터가 없으면 빈 차트 표시
+          renderSubcategoryChart([], null);
+        }
+      }
+
+      async function initDashboard() {
+        try {
+          showLoading(); // 로딩 시작
+          const data = await loadData();
+          console.log("Loaded data:", data);
+          
+          // 데이터 캐시 저장
+          cachedData = data;
+          
+          // 주차 정보 추출
+          WEEK_INFO = data.week_info || { current_week: 48, next_week: 49 };
+          const defaultCurrentWeek = WEEK_INFO.current_week;
+          NEXT_WEEK = WEEK_INFO.next_week;
+
+          // 주차 선택 라디오 버튼 생성 (처음 한 번만)
+          if (!document.querySelector('input[name="week-select"]')) {
+            createWeekSelector(defaultCurrentWeek, NEXT_WEEK);
+            CURRENT_WEEK = defaultCurrentWeek;
+          } else {
+            // 이미 라디오 버튼이 있으면 현재 선택된 값을 사용
+            const selectedRadio = document.querySelector('input[name="week-select"]:checked');
+            if (selectedRadio) {
+              CURRENT_WEEK = parseInt(selectedRadio.value);
+            } else {
+              CURRENT_WEEK = defaultCurrentWeek;
+            }
+          }
+          
+          const nations = data.nations || [];
+          const items = data.items || [];
+          const categories = data.categories || [];
+          const subcategories = data.sub_categories || data.subCategories || [];
+
+          console.log("=== Data Debug Info ===");
+          console.log("Nations:", nations);
+          console.log("Items:", items);
+          console.log("Categories:", categories);
+          console.log("Subcategories:", subcategories);
+          console.log("Subcategories length:", subcategories.length);
+          if (subcategories.length > 0) {
+            console.log("First subcategory row:", subcategories[0]);
+          }
+          console.log("Looking for TOTAL row...");
+          console.log("Week info:", WEEK_INFO);
+          console.log("Current selected week:", CURRENT_WEEK);
+
+          const totalRow = nations.find(
+            (row) => (row.code || "").toUpperCase() === "TOTAL"
+          );
+
+          console.log("Total row found:", totalRow);
+          if (totalRow) {
+            console.log("Total row data:", {
+              code: totalRow.code,
+              total_qty: totalRow.total_qty,
+              [`actual_${CURRENT_WEEK}`]: totalRow[`actual_${CURRENT_WEEK}`],
+              [`actual_${NEXT_WEEK}`]: totalRow[`actual_${NEXT_WEEK}`],
+            });
+          } else {
+            console.warn("TOTAL row not found in nations array!");
+            console.log("Available codes:", nations.map(r => r.code || r.country || "N/A"));
+          }
+
+          updateWeekLabels();
+          updateKpis(totalRow);
+          renderDonut(totalRow);
+          renderNations(nations);
+          renderItems(items);
+          renderCategories(categories);
+          // subcategories만 사용 (O~Y열 데이터)
+          if (subcategories.length > 0) {
+            initSubcategorySelect(subcategories);
+            renderSubcategoryChart(subcategories, currentSubSelection);
+          } else {
+            // 데이터가 없으면 빈 상태로 초기화
+            initSubcategorySelect([]);
+            renderSubcategoryChart([], null);
+          }
+          
+          // 모든 렌더링이 완료된 후 로딩 숨김
+          setTimeout(() => {
+            hideLoading();
+          }, 100);
+        } catch (error) {
+          console.error("Dashboard initialization error:", error);
+          hideLoading(); // 에러 발생 시에도 로딩 숨김
+          alert("대시보드 데이터를 불러오지 못했습니다. 서버 상태를 확인하세요.");
+        }
+      }
+
+      initDashboard();
+      // setInterval(initDashboard, 60_000);  // 필요하면 나중에 자동 새로고침
+    </script>
+  </body>
+</html>
