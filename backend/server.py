@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import re
 import traceback
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
@@ -159,6 +161,15 @@ DETAIL_VALUE_COLUMNS: Optional[Tuple[Tuple[str, str], ...]] = None
 WEEK1: Optional[int] = None
 WEEK2: Optional[int] = None
 
+# 데이터 캐시 시스템
+_data_cache: Optional[Dict[str, Any]] = None
+_cache_timestamp: Optional[datetime] = None
+_cache_lock = threading.Lock()
+
+# 업데이트 시간 설정 (오전 11시)
+UPDATE_HOUR = 11
+UPDATE_MINUTE = 0
+
 BLOCK_LAYOUT = (
     ("nations", {"rows": range(5, 10), "label_key": "code", "label_col": "B"}),
     ("items", {"rows": range(15, 19), "label_key": "item", "label_col": "B"}),
@@ -277,6 +288,86 @@ def ensure_excel_file() -> Path:
     return FILE_PATH
 
 
+def should_update_cache() -> bool:
+    """캐시를 업데이트해야 하는지 확인합니다.
+    - 캐시가 없으면 업데이트
+    - 오전 11시 이후이고 오늘 업데이트하지 않았으면 업데이트
+    """
+    global _cache_timestamp
+    
+    now = datetime.now()
+    
+    # 캐시가 없으면 업데이트
+    if _cache_timestamp is None:
+        return True
+    
+    # 오늘 날짜
+    today = now.date()
+    cache_date = _cache_timestamp.date()
+    
+    # 오늘 업데이트했으면 스킵
+    if cache_date == today:
+        return False
+    
+    # 오늘 업데이트하지 않았고, 오전 11시 이후면 업데이트
+    if now.hour >= UPDATE_HOUR:
+        return True
+    
+    return False
+
+
+def update_cache() -> None:
+    """캐시를 업데이트합니다."""
+    global _data_cache, _cache_timestamp
+    
+    with _cache_lock:
+        try:
+            print(f"[{datetime.now()}] Updating data cache...")
+            
+            # OneDrive 동기화 (강제 다운로드)
+            if ONEDRIVE_SHARE_LINK:
+                print("Syncing from OneDrive...")
+                sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=0, force_download=True)
+            
+            # 데이터 로드
+            quantity_data = load_summary("수량 기준")
+            style_count_data = load_summary("스타일수 기준")
+            
+            _data_cache = {
+                "quantity": quantity_data,
+                "style_count": style_count_data,
+            }
+            _cache_timestamp = datetime.now()
+            
+            print(f"[{datetime.now()}] Cache updated successfully")
+            print(f"Cache timestamp: {_cache_timestamp}")
+        except Exception as e:
+            print(f"Error updating cache: {e}")
+            print(traceback.format_exc())
+            # 에러가 발생해도 기존 캐시는 유지
+
+
+def get_cached_data(sheet_name: str) -> Dict[str, Any]:
+    """캐시된 데이터를 반환합니다. 필요시 업데이트합니다."""
+    global _data_cache
+    
+    # 업데이트가 필요하면 업데이트
+    if should_update_cache():
+        update_cache()
+    
+    # 캐시가 없으면 강제 업데이트
+    if _data_cache is None:
+        update_cache()
+    
+    # 캐시에서 데이터 반환
+    if sheet_name == "수량 기준":
+        return _data_cache.get("quantity", {})
+    elif sheet_name == "스타일수 기준":
+        return _data_cache.get("style_count", {})
+    else:
+        return {}
+
+
 def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     """엑셀 파일에서 데이터를 로드하고 주차 정보를 포함하여 반환합니다."""
     global VALUE_COLUMNS, DETAIL_VALUE_COLUMNS, WEEK1, WEEK2
@@ -392,14 +483,9 @@ def list_sheets() -> Dict[str, Any]:
 
 @app.get("/api/quantity")
 def get_quantity_summary(_: bool = Depends(verify_password)) -> Dict[str, Any]:
-    """수량 기준 데이터를 주차 정보와 함께 반환합니다."""
+    """수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
-        return load_summary("수량 기준")
-    except (FileNotFoundError, RuntimeError) as exc:
-        error_detail = str(exc)
-        print(f"Error in /api/quantity: {error_detail}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_detail) from exc
+        return get_cached_data("수량 기준")
     except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
         print(f"Unexpected error in /api/quantity: {error_detail}")
@@ -409,14 +495,9 @@ def get_quantity_summary(_: bool = Depends(verify_password)) -> Dict[str, Any]:
 
 @app.get("/api/style-count")
 def get_style_count_summary(_: bool = Depends(verify_password)) -> Dict[str, Any]:
-    """스타일수 기준 데이터를 주차 정보와 함께 반환합니다."""
+    """스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
-        return load_summary("스타일수 기준")
-    except (FileNotFoundError, RuntimeError) as exc:
-        error_detail = str(exc)
-        print(f"Error in /api/style-count: {error_detail}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_detail) from exc
+        return get_cached_data("스타일수 기준")
     except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
         print(f"Unexpected error in /api/style-count: {error_detail}")
@@ -426,13 +507,22 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Dict[str, Any
 
 @app.on_event("startup")
 async def startup_event():
-    """서버 시작 시 OneDrive 파일 동기화"""
-    if ONEDRIVE_SHARE_LINK:
-        print("Starting OneDrive sync on startup...")
-        try:
-            sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=SYNC_INTERVAL, force_download=True)
-            print("OneDrive sync completed successfully")
-        except Exception as e:
-            print(f"OneDrive sync failed on startup: {e}")
-            print("Will retry on first API request")
+    """서버 시작 시 초기 캐시 업데이트 및 백그라운드 스레드 시작"""
+    print("Starting server...")
+    print(f"Data update schedule: Daily at {UPDATE_HOUR}:{UPDATE_MINUTE:02d}")
+    
+    # 초기 캐시 업데이트
+    update_cache()
+    
+    # 백그라운드 스레드에서 주기적으로 업데이트 체크
+    def background_update_check():
+        """백그라운드에서 주기적으로 업데이트 필요 여부를 체크합니다."""
+        while True:
+            time.sleep(300)  # 5분마다 체크
+            if should_update_cache():
+                update_cache()
+    
+    thread = threading.Thread(target=background_update_check, daemon=True)
+    thread.start()
+    print("Background update checker started")
 
