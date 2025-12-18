@@ -320,6 +320,10 @@ def update_cache() -> None:
     """캐시를 업데이트합니다."""
     global _data_cache, _cache_timestamp
     
+    # 기존 캐시 백업 (에러 발생 시 복구용)
+    old_cache = _data_cache
+    old_timestamp = _cache_timestamp
+    
     with _cache_lock:
         try:
             print(f"[{datetime.now()}] Updating data cache...")
@@ -333,6 +337,19 @@ def update_cache() -> None:
             quantity_data = load_summary("수량 기준")
             style_count_data = load_summary("스타일수 기준")
             
+            # 데이터 유효성 검사
+            if not quantity_data or not isinstance(quantity_data, dict):
+                raise ValueError("Invalid quantity data")
+            if not style_count_data or not isinstance(style_count_data, dict):
+                raise ValueError("Invalid style_count data")
+            
+            # 필수 키 확인
+            required_keys = ["nations", "items", "categories", "week_info"]
+            if not all(key in quantity_data for key in required_keys):
+                raise ValueError("Missing required keys in quantity data")
+            if not all(key in style_count_data for key in required_keys):
+                raise ValueError("Missing required keys in style_count data")
+            
             _data_cache = {
                 "quantity": quantity_data,
                 "style_count": style_count_data,
@@ -344,7 +361,14 @@ def update_cache() -> None:
         except Exception as e:
             print(f"Error updating cache: {e}")
             print(traceback.format_exc())
-            # 에러가 발생해도 기존 캐시는 유지
+            # 에러 발생 시 기존 캐시 복구
+            if old_cache is not None:
+                _data_cache = old_cache
+                _cache_timestamp = old_timestamp
+                print("Restored previous cache due to update error")
+            else:
+                # 기존 캐시도 없으면 None 유지 (다음 요청 시 직접 로드)
+                print("No previous cache to restore, will load directly on next request")
 
 
 def get_cached_data(sheet_name: str) -> Dict[str, Any]:
@@ -359,13 +383,36 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
     if _data_cache is None:
         update_cache()
     
-    # 캐시에서 데이터 반환
-    if sheet_name == "수량 기준":
-        return _data_cache.get("quantity", {})
-    elif sheet_name == "스타일수 기준":
-        return _data_cache.get("style_count", {})
-    else:
-        return {}
+    # 캐시에서 데이터 반환 시도
+    if _data_cache is not None:
+        if sheet_name == "수량 기준":
+            cached = _data_cache.get("quantity")
+            if cached and isinstance(cached, dict) and len(cached) > 0:
+                return cached
+        elif sheet_name == "스타일수 기준":
+            cached = _data_cache.get("style_count")
+            if cached and isinstance(cached, dict) and len(cached) > 0:
+                return cached
+    
+    # 캐시가 없거나 유효하지 않으면 직접 로드 (fallback)
+    print(f"Warning: Cache not available for {sheet_name}, loading directly...")
+    try:
+        return load_summary(sheet_name)
+    except Exception as e:
+        print(f"Error loading data directly: {e}")
+        print(traceback.format_exc())
+        # 최소한의 구조라도 반환하여 프론트엔드 에러 방지
+        return {
+            "nations": [],
+            "items": [],
+            "categories": [],
+            "sub_categories": [],
+            "week_info": {
+                "current_week": DEFAULT_WEEK1,
+                "next_week": DEFAULT_WEEK2,
+            },
+            "sheet_name": sheet_name,
+        }
 
 
 def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
