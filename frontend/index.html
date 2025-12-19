@@ -401,6 +401,12 @@
           return;
         }
 
+        // 에러 메시지 숨기기
+        errorDiv.classList.remove("show");
+
+        // 로딩 표시 시작
+        showLoading("인증 중...");
+
         // 비밀번호를 Base64로 인코딩하여 Basic Auth 헤더 생성
         const encodedPassword = btoa(`user:${password}`);
         AUTH_HEADERS = {
@@ -419,11 +425,16 @@
             console.log("Response status:", resp.status);
             console.log("Response ok:", resp.ok);
             if (resp.ok) {
-              // 인증 성공
+              // 인증 성공 - 로딩 메시지 변경
+              showLoading("정보 접근 중...");
+              // 로그인 오버레이 숨기기
               document.getElementById("login-overlay").classList.add("hidden");
               document.getElementById("dashboard-content").classList.remove("hidden");
+              // 대시보드 초기화 (이미 로딩이 표시되어 있음)
               initDashboard();
             } else {
+              // 인증 실패 - 로딩 숨기기
+              hideLoading();
               // 인증 실패 - 응답 본문 확인
               resp.text().then(text => {
                 console.error("Auth failed. Response:", text);
@@ -433,7 +444,8 @@
             }
           })
           .catch(err => {
-            // 네트워크 오류 또는 인증 실패
+            // 네트워크 오류 또는 인증 실패 - 로딩 숨기기
+            hideLoading();
             console.error("Fetch error:", err);
             errorDiv.classList.add("show");
             passwordInput.value = "";
@@ -449,9 +461,13 @@
       });
 
       // 로딩 표시 함수
-      function showLoading() {
+      function showLoading(message = "데이터를 불러오는 중...") {
         const overlay = document.getElementById("loading-overlay");
+        const loadingText = overlay?.querySelector(".loading-text");
         if (overlay) {
+          if (loadingText) {
+            loadingText.textContent = message;
+          }
           overlay.classList.add("show");
         }
       }

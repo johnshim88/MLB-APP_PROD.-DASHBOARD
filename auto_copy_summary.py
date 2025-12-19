@@ -19,6 +19,9 @@ DEST_FILE = Path(r"G:\내 드라이브\MLB PROD DASHBOARD\★26SS MLB 생산스�
 # 로그 파일 경로 (선택사항)
 LOG_FILE = Path(r"G:\내 드라이브\MLB PROD DASHBOARD\copy_log.txt")
 
+# 강제 덮어쓰기 옵션 (True: 항상 복사, False: 최신일 때만 복사)
+FORCE_COPY = True  # True로 설정하면 항상 덮어쓰기
+
 
 def log_message(message: str, to_console: bool = True, to_file: bool = True):
     """메시지를 콘솔과 로그 파일에 기록"""
@@ -38,7 +41,7 @@ def log_message(message: str, to_console: bool = True, to_file: bool = True):
 
 
 def copy_if_newer():
-    """원본 파일이 더 최신이면 복사"""
+    """원본 파일을 복사 (FORCE_COPY 옵션에 따라 강제 복사 또는 조건부 복사)"""
     try:
         # 원본 파일 존재 확인
         if not SOURCE_FILE.exists():
@@ -48,7 +51,16 @@ def copy_if_newer():
         # Google Drive 폴더 생성
         DEST_FILE.parent.mkdir(parents=True, exist_ok=True)
         
-        # 파일 복사 여부 결정
+        # 강제 복사 모드인 경우
+        if FORCE_COPY:
+            # 파일 복사 (덮어쓰기)
+            shutil.copy2(SOURCE_FILE, DEST_FILE)
+            log_message(f"파일 강제 복사 완료: {DEST_FILE}")
+            log_message(f"  원본 수정 시간: {datetime.fromtimestamp(SOURCE_FILE.stat().st_mtime)}")
+            log_message(f"  복사본 수정 시간: {datetime.fromtimestamp(DEST_FILE.stat().st_mtime)}")
+            return True
+        
+        # 조건부 복사 모드 (기존 로직)
         should_copy = False
         reason = ""
         
@@ -94,6 +106,7 @@ def main():
     log_message("SUMMARY 파일 자동 복사 스크립트 시작")
     log_message(f"원본 파일: {SOURCE_FILE}")
     log_message(f"복사본 파일: {DEST_FILE}")
+    log_message(f"강제 복사 모드: {'ON' if FORCE_COPY else 'OFF'}")
     log_message("=" * 60)
     
     success = copy_if_newer()
