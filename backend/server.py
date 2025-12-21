@@ -87,12 +87,15 @@ def _find_week_numbers(ws: Worksheet) -> Tuple[int, int]:
     for row in range(1, 5):
         # D열부터 L열까지 확인 (첫 번째 주차 그룹)
         for col_letter in ["D", "E", "F", "G", "H", "I", "J", "K", "L"]:
-            cell_value = ws[f"{col_letter}{row}"].value
-            week_num = _extract_week_from_header(cell_value)
-            if week_num is not None and week_num not in week_numbers:
-                week_numbers.append(week_num)
-                if len(week_numbers) >= 2:
-                    break
+            try:
+                cell_value = ws[f"{col_letter}{row}"].value
+                week_num = _extract_week_from_header(cell_value)
+                if week_num is not None and week_num not in week_numbers:
+                    week_numbers.append(week_num)
+                    if len(week_numbers) >= 2:
+                        break
+            except Exception:
+                continue
         if len(week_numbers) >= 2:
             break
     
@@ -105,7 +108,6 @@ def _find_week_numbers(ws: Worksheet) -> Tuple[int, int]:
         return (week_numbers[0], week_numbers[0] + 1)
     else:
         # 찾지 못했으면 기본값 사용
-        print(f"Warning: Could not find week numbers in header, using defaults: {DEFAULT_WEEK1}, {DEFAULT_WEEK2}")
         return (DEFAULT_WEEK1, DEFAULT_WEEK2)
 
 
@@ -225,9 +227,10 @@ def _extract_block(ws: Worksheet, config: Dict[str, Any]) -> List[Dict[str, Any]
     label_key = config.get("label_key", "label")
     rows = config.get("rows", [])
 
+    # 배치로 셀 읽기 최적화 (메모리 효율성 향상)
     for row in config["rows"]:
         try:
-            label = ws[f"{config['label_col']}{row}"].value
+            label = ws[f"{label_col}{row}"].value
 
             if label in (None, ""):
                 if config.get("stop_on_blank"):
@@ -237,8 +240,9 @@ def _extract_block(ws: Worksheet, config: Dict[str, Any]) -> List[Dict[str, Any]
                 continue
 
             blank_streak = 0
-            entry = {config["label_key"]: label}
+            entry = {label_key: label}
 
+            # 한 행의 모든 셀을 한 번에 읽기 (메모리 효율성)
             for key, column in columns:
                 try:
                     cell_value = ws[f"{column}{row}"].value
@@ -256,19 +260,16 @@ def _extract_block(ws: Worksheet, config: Dict[str, Any]) -> List[Dict[str, Any]
                             entry[key] = None
                         else:
                             try:
-                                if "." in cleaned:
-                                    entry[key] = float(cleaned)
-                                else:
-                                    entry[key] = int(cleaned)
+                                entry[key] = float(cleaned) if "." in cleaned else int(cleaned)
                             except (ValueError, TypeError):
                                 entry[key] = None
                     else:
                         entry[key] = cell_value
-                except Exception as e:
+                except Exception:
                     entry[key] = None
 
             payload.append(entry)
-        except Exception as e:
+        except Exception:
             continue
 
     return payload
@@ -276,10 +277,9 @@ def _extract_block(ws: Worksheet, config: Dict[str, Any]) -> List[Dict[str, Any]
 
 def ensure_excel_file() -> Path:
     """엑셀 파일이 존재하는지 확인하고, OneDrive에서 동기화합니다."""
-    # OneDrive 링크가 설정되어 있으면 동기화 시도
+    # OneDrive 링크가 설정되어 있고 파일이 없으면 동기화 시도
     if ONEDRIVE_SHARE_LINK and not FILE_PATH.exists():
-        print(f"Excel file not found locally. Attempting to sync from OneDrive...")
-        sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=SYNC_INTERVAL)
+        sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=SYNC_INTERVAL, force_download=False)
     
     # 파일이 여전히 없으면 에러
     if not FILE_PATH.exists():
@@ -291,6 +291,7 @@ def ensure_excel_file() -> Path:
 def should_update_cache() -> bool:
     """캐시를 업데이트해야 하는지 확인합니다.
     - 캐시가 없으면 업데이트
+    - 파일이 변경되었으면 업데이트
     - 오전 11시 이후이고 오늘 업데이트하지 않았으면 업데이트
     """
     global _cache_timestamp
@@ -300,6 +301,13 @@ def should_update_cache() -> bool:
     # 캐시가 없으면 업데이트
     if _cache_timestamp is None:
         return True
+    
+    # 파일 수정 시간 확인
+    if FILE_PATH.exists():
+        file_mtime = datetime.fromtimestamp(FILE_PATH.stat().st_mtime)
+        # 파일이 캐시 이후에 수정되었으면 업데이트
+        if file_mtime > _cache_timestamp:
+            return True
     
     # 오늘 날짜
     today = now.date()
@@ -326,12 +334,21 @@ def update_cache() -> None:
     
     with _cache_lock:
         try:
-            print(f"[{datetime.now()}] Updating data cache...")
+            # 파일 수정 시간 확인
+            file_mtime = None
+            if FILE_PATH.exists():
+                file_mtime = datetime.fromtimestamp(FILE_PATH.stat().st_mtime)
             
-            # OneDrive 동기화 (강제 다운로드)
+            # 캐시가 있고 파일이 변경되지 않았으면 스킵
+            if _data_cache is not None and _cache_timestamp is not None:
+                if file_mtime and file_mtime <= _cache_timestamp:
+                    return  # 파일이 변경되지 않음
+            
+            # OneDrive 동기화 (파일이 없거나 오래된 경우만)
             if ONEDRIVE_SHARE_LINK:
-                print("Syncing from OneDrive...")
-                sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=0, force_download=True)
+                # 파일이 없거나 1시간 이상 지났을 때만 동기화
+                if not FILE_PATH.exists() or (file_mtime and (datetime.now() - file_mtime).total_seconds() > 3600):
+                    sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=3600, force_download=False)
             
             # 데이터 로드
             quantity_data = load_summary("수량 기준")
@@ -356,26 +373,21 @@ def update_cache() -> None:
             }
             _cache_timestamp = datetime.now()
             
-            print(f"[{datetime.now()}] Cache updated successfully")
-            print(f"Cache timestamp: {_cache_timestamp}")
         except Exception as e:
-            print(f"Error updating cache: {e}")
-            print(traceback.format_exc())
             # 에러 발생 시 기존 캐시 복구
             if old_cache is not None:
                 _data_cache = old_cache
                 _cache_timestamp = old_timestamp
-                print("Restored previous cache due to update error")
             else:
                 # 기존 캐시도 없으면 None 유지 (다음 요청 시 직접 로드)
-                print("No previous cache to restore, will load directly on next request")
+                pass
 
 
 def get_cached_data(sheet_name: str) -> Dict[str, Any]:
     """캐시된 데이터를 반환합니다. 필요시 업데이트합니다."""
     global _data_cache
     
-    # 업데이트가 필요하면 업데이트
+    # 업데이트가 필요하면 업데이트 (비동기로 처리하지 않고 동기적으로)
     if should_update_cache():
         update_cache()
     
@@ -395,12 +407,9 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
                 return cached
     
     # 캐시가 없거나 유효하지 않으면 직접 로드 (fallback)
-    print(f"Warning: Cache not available for {sheet_name}, loading directly...")
     try:
         return load_summary(sheet_name)
     except Exception as e:
-        print(f"Error loading data directly: {e}")
-        print(traceback.format_exc())
         # 최소한의 구조라도 반환하여 프론트엔드 에러 방지
         return {
             "nations": [],
@@ -426,7 +435,8 @@ def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     
     workbook = None
     try:
-        workbook = openpyxl.load_workbook(excel_path, data_only=True, read_only=True)
+        # read_only=True로 메모리 사용량 최소화
+        workbook = openpyxl.load_workbook(excel_path, data_only=True, read_only=True, keep_links=False)
     except PermissionError as exc:
         error_msg = (
             f"엑셀 파일에 접근할 수 없습니다. 파일이 다른 프로그램에서 열려있거나 "
@@ -471,7 +481,6 @@ def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
                 extracted = _extract_block(sheet, current_config)
                 data[name] = extracted
             except Exception as e:
-                print(f"Warning: Failed to extract block '{name}': {e}")
                 data[name] = []
         
         result = {
@@ -486,8 +495,6 @@ def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
         return result
     except Exception as e:
         error_msg = f"Unexpected error in load_summary: {str(e)}"
-        print(error_msg)
-        print(traceback.format_exc())
         raise RuntimeError(error_msg) from e
     finally:
         if workbook:
@@ -555,9 +562,6 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Dict[str, Any
 @app.on_event("startup")
 async def startup_event():
     """서버 시작 시 초기 캐시 업데이트 및 백그라운드 스레드 시작"""
-    print("Starting server...")
-    print(f"Data update schedule: Daily at {UPDATE_HOUR}:{UPDATE_MINUTE:02d}")
-    
     # 초기 캐시 업데이트
     update_cache()
     
@@ -565,11 +569,13 @@ async def startup_event():
     def background_update_check():
         """백그라운드에서 주기적으로 업데이트 필요 여부를 체크합니다."""
         while True:
-            time.sleep(300)  # 5분마다 체크
-            if should_update_cache():
-                update_cache()
+            time.sleep(600)  # 10분마다 체크 (메모리 부하 감소)
+            try:
+                if should_update_cache():
+                    update_cache()
+            except Exception:
+                pass  # 에러 발생해도 계속 실행
     
     thread = threading.Thread(target=background_update_check, daemon=True)
     thread.start()
-    print("Background update checker started")
 

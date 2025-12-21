@@ -594,31 +594,34 @@
       };
 
       async function loadData() {
-        const resp = await fetch(DATA_URL, {
-          headers: AUTH_HEADERS
-        });
-        if (!resp.ok) {
-          if (resp.status === 401) {
-            // 인증 실패 - 다시 로그인 화면으로
-            document.getElementById("login-overlay").classList.remove("hidden");
-            document.getElementById("dashboard-content").classList.add("hidden");
-            throw new Error("인증이 만료되었습니다. 다시 로그인해주세요.");
+        try {
+          const resp = await fetch(DATA_URL, {
+            headers: AUTH_HEADERS,
+            cache: 'no-cache' // 항상 최신 데이터 가져오기
+          });
+          if (!resp.ok) {
+            if (resp.status === 401) {
+              // 인증 실패 - 다시 로그인 화면으로
+              document.getElementById("login-overlay").classList.remove("hidden");
+              document.getElementById("dashboard-content").classList.add("hidden");
+              throw new Error("인증이 만료되었습니다. 다시 로그인해주세요.");
+            }
+            throw new Error(`데이터를 불러올 수 없습니다. (${resp.status})`);
           }
-          throw new Error("데이터를 불러올 수 없습니다.");
+          return await resp.json();
+        } catch (error) {
+          console.error("데이터 로드 오류:", error);
+          throw error;
         }
-        return resp.json();
       }
 
       // 진행률 계산 수정: 주차 목표진행률 추가
       function updateKpis(totalRow) {
         if (!totalRow) {
-          console.warn("updateKpis: totalRow is null or undefined");
-          ["kpi-total", "kpi-actual", "kpi-pct", "kpi-target-pct"].forEach(
-            (id) => {
-              const el = document.getElementById(id);
-              if (el) el.textContent = "-";
-            }
-          );
+          ["kpi-total", "kpi-actual", "kpi-pct", "kpi-target-pct"].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = "-";
+          });
           return;
         }
         
@@ -628,15 +631,6 @@
         
         const actualCurrent = totalRow[actualKey] ?? 0;
         const targetPctCurrent = totalRow[targetPctKey] ?? null;
-
-        console.log(`updateKpis for week ${CURRENT_WEEK}:`, {
-          totalQty,
-          actualKey,
-          actualCurrent,
-          targetPctKey,
-          targetPctCurrent,
-        });
-
         const progressCurrent = totalQty && totalQty > 0 ? actualCurrent / totalQty : 0;
 
         const kpiTotalEl = document.getElementById("kpi-total");
@@ -644,23 +638,13 @@
         const kpiPctEl = document.getElementById("kpi-pct");
         const kpiTargetPctEl = document.getElementById("kpi-target-pct");
 
-        if (kpiTotalEl) {
-          kpiTotalEl.textContent = fmt.format(totalQty);
-        }
-        if (kpiActualEl) {
-          kpiActualEl.textContent = fmt.format(actualCurrent);
-        }
-        if (kpiPctEl) {
-          kpiPctEl.textContent = pct.format(progressCurrent);
-        }
+        if (kpiTotalEl) kpiTotalEl.textContent = fmt.format(totalQty);
+        if (kpiActualEl) kpiActualEl.textContent = fmt.format(actualCurrent);
+        if (kpiPctEl) kpiPctEl.textContent = pct.format(progressCurrent);
         
-        // 주차 목표진행률 표시 (G열 또는 K열)
+        // 주차 목표진행률 표시
         if (kpiTargetPctEl) {
-          if (targetPctCurrent != null && targetPctCurrent !== undefined) {
-            kpiTargetPctEl.textContent = pct.format(targetPctCurrent);
-          } else {
-            kpiTargetPctEl.textContent = "-";
-          }
+          kpiTargetPctEl.textContent = targetPctCurrent != null ? pct.format(targetPctCurrent) : "-";
         }
       }
 
@@ -904,16 +888,7 @@
         }
 
         const targetRow =
-          rows.find(
-            (row) => (row.subcategory || "-") === label
-          ) || rows[0];
-
-        console.log(`renderSubcategoryChart: week=${CURRENT_WEEK}, label=${label}`, {
-          targetKey: `target_${CURRENT_WEEK}`,
-          actualKey: `actual_${CURRENT_WEEK}`,
-          targetValue: targetRow?.[`target_${CURRENT_WEEK}`],
-          actualValue: targetRow?.[`actual_${CURRENT_WEEK}`],
-        });
+          rows.find((row) => (row.subcategory || "-") === label) || rows[0];
 
         const targetPct = targetRow?.[`target_${CURRENT_WEEK}_pct`] ?? null;
         const actualPct = targetRow?.[`actual_${CURRENT_WEEK}_pct`] ?? null;
@@ -1030,30 +1005,10 @@
         const categories = data.categories || [];
         const subcategories = data.sub_categories || data.subCategories || [];
 
-        console.log("=== Refresh Debug Info ===");
-        console.log("Refreshing dashboard with current week:", CURRENT_WEEK);
-        console.log("Current subcategory selection:", currentSubSelection);
-        console.log("Subcategories length:", subcategories.length);
-        if (subcategories.length > 0) {
-          console.log("Subcategories data:", subcategories);
-        } else {
-          console.warn("WARNING: subcategories array is empty!");
-        }
-
-        // 스타일 수 기준인 경우 items 배열에서 18행 TOTAL 찾기, 수량 기준인 경우 nations에서 찾기
-        let totalRow;
-        if (CURRENT_TYPE === "style-count") {
-          totalRow = items.find(
-            (row) => (row.item || "").toUpperCase() === "TOTAL"
-          );
-          console.log("Style-count mode: Looking for TOTAL in items array");
-          console.log("Items array:", items);
-          console.log("Total row found:", totalRow);
-        } else {
-          totalRow = nations.find(
-            (row) => (row.code || "").toUpperCase() === "TOTAL"
-          );
-        }
+        // 스타일 수 기준인 경우 items 배열에서 TOTAL 찾기, 수량 기준인 경우 nations에서 찾기
+        const totalRow = CURRENT_TYPE === "style-count"
+          ? items.find((row) => (row.item || "").toUpperCase() === "TOTAL")
+          : nations.find((row) => (row.code || "").toUpperCase() === "TOTAL");
 
         updateWeekLabels();
         updateKpis(totalRow);
@@ -1064,16 +1019,11 @@
         
         // 세부 복종별 차트도 현재 주차로 다시 렌더링
         // currentSubSelection이 없으면 자동으로 선택
-        // O~Y열 데이터(subcategories)만 사용
         if (!currentSubSelection && subcategories.length > 0) {
-          const labels = subcategories.map(
-            (row) => row.subcategory || "-"
-          );
+          const labels = subcategories.map((row) => row.subcategory || "-");
           const uniqueLabels = [...new Set(labels)];
           const preferred =
-            SUBCATEGORY_PRIORITY.find((name) =>
-              uniqueLabels.includes(name)
-            ) || uniqueLabels[0];
+            SUBCATEGORY_PRIORITY.find((name) => uniqueLabels.includes(name)) || uniqueLabels[0];
           currentSubSelection = preferred;
         }
         
@@ -1090,7 +1040,6 @@
         try {
           showLoading(); // 로딩 시작
           const data = await loadData();
-          console.log("Loaded data:", data);
           
           // 데이터 캐시 저장
           cachedData = data;
@@ -1119,35 +1068,10 @@
           const categories = data.categories || [];
           const subcategories = data.sub_categories || data.subCategories || [];
 
-          console.log("=== Data Debug Info ===");
-          console.log("Nations:", nations);
-          console.log("Items:", items);
-          console.log("Categories:", categories);
-          console.log("Subcategories:", subcategories);
-          console.log("Subcategories length:", subcategories.length);
-          if (subcategories.length > 0) {
-            console.log("First subcategory row:", subcategories[0]);
-          }
-          console.log("Looking for TOTAL row...");
-          console.log("Week info:", WEEK_INFO);
-          console.log("Current selected week:", CURRENT_WEEK);
-
-          const totalRow = nations.find(
-            (row) => (row.code || "").toUpperCase() === "TOTAL"
-          );
-
-          console.log("Total row found:", totalRow);
-          if (totalRow) {
-            console.log("Total row data:", {
-              code: totalRow.code,
-              total_qty: totalRow.total_qty,
-              [`actual_${CURRENT_WEEK}`]: totalRow[`actual_${CURRENT_WEEK}`],
-              [`actual_${NEXT_WEEK}`]: totalRow[`actual_${NEXT_WEEK}`],
-            });
-          } else {
-            console.warn("TOTAL row not found in nations array!");
-            console.log("Available codes:", nations.map(r => r.code || r.country || "N/A"));
-          }
+          // 스타일 수 기준인 경우 items에서 TOTAL 찾기, 수량 기준인 경우 nations에서 찾기
+          const totalRow = CURRENT_TYPE === "style-count"
+            ? items.find((row) => (row.item || "").toUpperCase() === "TOTAL")
+            : nations.find((row) => (row.code || "").toUpperCase() === "TOTAL");
 
           updateWeekLabels();
           updateKpis(totalRow);
@@ -1166,9 +1090,7 @@
           }
           
           // 모든 렌더링이 완료된 후 로딩 숨김
-          setTimeout(() => {
-            hideLoading();
-          }, 100);
+          hideLoading();
         } catch (error) {
           console.error("Dashboard initialization error:", error);
           hideLoading(); // 에러 발생 시에도 로딩 숨김
