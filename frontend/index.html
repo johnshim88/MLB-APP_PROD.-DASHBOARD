@@ -595,10 +595,19 @@
 
       async function loadData() {
         try {
+          // 캐시 전략: 브라우저 캐시 활용, 조건부 요청 지원
+          const headers = {...AUTH_HEADERS};
+          
+          // 이전 응답의 ETag가 있으면 조건부 요청
+          if (cachedData && cachedData._etag) {
+            headers['If-None-Match'] = cachedData._etag;
+          }
+          
           const resp = await fetch(DATA_URL, {
-            headers: AUTH_HEADERS,
-            cache: 'no-cache' // 항상 최신 데이터 가져오기
+            headers: headers,
+            cache: 'default' // 브라우저 캐시 활용
           });
+          
           if (!resp.ok) {
             if (resp.status === 401) {
               // 인증 실패 - 다시 로그인 화면으로
@@ -606,9 +615,20 @@
               document.getElementById("dashboard-content").classList.add("hidden");
               throw new Error("인증이 만료되었습니다. 다시 로그인해주세요.");
             }
+            if (resp.status === 304) {
+              // Not Modified - 캐시된 데이터 사용
+              return cachedData;
+            }
             throw new Error(`데이터를 불러올 수 없습니다. (${resp.status})`);
           }
-          return await resp.json();
+          
+          const data = await resp.json();
+          // ETag 저장 (다음 요청 시 사용)
+          const etag = resp.headers.get('ETag');
+          if (etag && data) {
+            data._etag = etag;
+          }
+          return data;
         } catch (error) {
           console.error("데이터 로드 오류:", error);
           throw error;

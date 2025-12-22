@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import traceback
 import threading
 import time
@@ -12,8 +13,9 @@ from datetime import datetime, timedelta
 import openpyxl
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from openpyxl.worksheet.worksheet import Worksheet
 import secrets
 
@@ -200,6 +202,9 @@ BLOCK_LAYOUT = (
 
 app = FastAPI(title="26SS Quantity Summary API")
 
+# Gzip 압축 미들웨어 추가 (1KB 이상만 압축)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # CORS 설정 - 프론트엔드 도메인만 허용하도록 제한 가능
 app.add_middleware(
     CORSMiddleware,
@@ -210,7 +215,8 @@ app.add_middleware(
 
 
 def _extract_block(ws: Worksheet, config: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Generic reader for a contiguous table that shares the same value columns."""
+    """Generic reader for a contiguous table that shares the same value columns.
+    최적화: iter_rows()를 사용하여 행 단위 배치 읽기로 성능 향상."""
 
     payload: List[Dict[str, Any]] = []
     blank_streak = 0
@@ -226,51 +232,115 @@ def _extract_block(ws: Worksheet, config: Dict[str, Any]) -> List[Dict[str, Any]
     label_col = config.get("label_col", "B")
     label_key = config.get("label_key", "label")
     rows = config.get("rows", [])
-
-    # 배치로 셀 읽기 최적화 (메모리 효율성 향상)
-    for row in config["rows"]:
-        try:
-            label = ws[f"{label_col}{row}"].value
-
-            if label in (None, ""):
-                if config.get("stop_on_blank"):
-                    blank_streak += 1
-                    if blank_streak >= config.get("blank_tolerance", 1):
-                        break
+    
+    if not rows:
+        return payload
+    
+    # 행 범위 계산
+    min_row = min(rows)
+    max_row = max(rows)
+    
+    # 열 인덱스 변환 (문자 -> 숫자)
+    label_col_num = _col_letter_to_num(label_col)
+    column_nums = {key: _col_letter_to_num(col) for key, col in columns}
+    
+    # 필요한 열 범위 계산 (label_col + 모든 value columns)
+    all_cols = [label_col_num] + list(column_nums.values())
+    min_col = min(all_cols)
+    max_col = max(all_cols)
+    
+    # iter_rows로 배치 읽기 (values_only=True로 값만 가져오기)
+    try:
+        row_data = {}
+        for row_idx, row_values in enumerate(ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True), start=min_row):
+            if row_idx not in rows:
                 continue
-
-            blank_streak = 0
-            entry = {label_key: label}
-
-            # 한 행의 모든 셀을 한 번에 읽기 (메모리 효율성)
-            for key, column in columns:
-                try:
-                    cell_value = ws[f"{column}{row}"].value
-                    
-                    # #VALUE! 같은 엑셀 오류 문자열 처리
-                    if isinstance(cell_value, str) and cell_value.startswith("#"):
-                        entry[key] = None
-                    elif cell_value is None:
-                        entry[key] = None
-                    elif isinstance(cell_value, (int, float)):
-                        entry[key] = cell_value
-                    elif isinstance(cell_value, str):
-                        cleaned = cell_value.strip().replace(",", "").replace(" ", "")
-                        if not cleaned or cleaned.startswith("#"):
-                            entry[key] = None
-                        else:
-                            try:
-                                entry[key] = float(cleaned) if "." in cleaned else int(cleaned)
-                            except (ValueError, TypeError):
-                                entry[key] = None
-                    else:
-                        entry[key] = cell_value
-                except Exception:
-                    entry[key] = None
-
-            payload.append(entry)
-        except Exception:
-            continue
+            
+            try:
+                # label_col 값 가져오기
+                label_idx = label_col_num - min_col
+                label = row_values[label_idx] if label_idx < len(row_values) else None
+                
+                # None이나 빈 문자열 처리
+                if label in (None, ""):
+                    if config.get("stop_on_blank"):
+                        blank_streak += 1
+                        if blank_streak >= config.get("blank_tolerance", 1):
+                            break
+                    continue
+                
+                blank_streak = 0
+                entry = {label_key: label}
+                
+                # 각 컬럼 값 가져오기
+                for key, col_letter in columns:
+                    try:
+                        col_num = column_nums[key]
+                        col_idx = col_num - min_col
+                        cell_value = row_values[col_idx] if col_idx < len(row_values) else None
+                        
+                        # 값 처리 및 최적화
+                        if isinstance(cell_value, str) and cell_value.startswith("#"):
+                            # 엑셀 오류는 None으로 처리하되 딕셔너리에 추가하지 않음
+                            continue
+                        elif cell_value is None:
+                            # None 값은 추가하지 않음 (데이터 구조 최적화)
+                            continue
+                        elif isinstance(cell_value, (int, float)):
+                            entry[key] = cell_value
+                        elif isinstance(cell_value, str):
+                            cleaned = cell_value.strip().replace(",", "").replace(" ", "")
+                            if cleaned and not cleaned.startswith("#"):
+                                try:
+                                    entry[key] = float(cleaned) if "." in cleaned else int(cleaned)
+                                except (ValueError, TypeError):
+                                    continue
+                    except Exception:
+                        continue
+                
+                # entry에 데이터가 있으면 추가 (빈 딕셔너리 제외)
+                if len(entry) > 1:  # label_key 외에 다른 키가 있으면
+                    payload.append(entry)
+            except Exception:
+                continue
+    except Exception:
+        # iter_rows 실패 시 기존 방식으로 fallback
+        for row in rows:
+            try:
+                label = ws[f"{label_col}{row}"].value
+                if label in (None, ""):
+                    if config.get("stop_on_blank"):
+                        blank_streak += 1
+                        if blank_streak >= config.get("blank_tolerance", 1):
+                            break
+                    continue
+                
+                blank_streak = 0
+                entry = {label_key: label}
+                
+                for key, column in columns:
+                    try:
+                        cell_value = ws[f"{column}{row}"].value
+                        if isinstance(cell_value, str) and cell_value.startswith("#"):
+                            continue
+                        elif cell_value is None:
+                            continue
+                        elif isinstance(cell_value, (int, float)):
+                            entry[key] = cell_value
+                        elif isinstance(cell_value, str):
+                            cleaned = cell_value.strip().replace(",", "").replace(" ", "")
+                            if cleaned and not cleaned.startswith("#"):
+                                try:
+                                    entry[key] = float(cleaned) if "." in cleaned else int(cleaned)
+                                except (ValueError, TypeError):
+                                    continue
+                    except Exception:
+                        continue
+                
+                if len(entry) > 1:
+                    payload.append(entry)
+            except Exception:
+                continue
 
     return payload
 
@@ -519,10 +589,21 @@ def list_sheets() -> Dict[str, Any]:
 
 
 @app.get("/api/quantity")
-def get_quantity_summary(_: bool = Depends(verify_password)) -> Dict[str, Any]:
+def get_quantity_summary(_: bool = Depends(verify_password)) -> Response:
     """수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
-        return get_cached_data("수량 기준")
+        data = get_cached_data("수량 기준")
+        # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
+        cache_timestamp = _cache_timestamp.isoformat() if _cache_timestamp else ""
+        headers = {
+            "Cache-Control": "public, max-age=3600",
+            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp)}"',
+        }
+        return Response(
+            content=json.dumps(data, ensure_ascii=False),
+            media_type="application/json",
+            headers=headers
+        )
     except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
         print(f"Unexpected error in /api/quantity: {error_detail}")
@@ -531,10 +612,21 @@ def get_quantity_summary(_: bool = Depends(verify_password)) -> Dict[str, Any]:
 
 
 @app.get("/api/style-count")
-def get_style_count_summary(_: bool = Depends(verify_password)) -> Dict[str, Any]:
+def get_style_count_summary(_: bool = Depends(verify_password)) -> Response:
     """스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
-        return get_cached_data("스타일수 기준")
+        data = get_cached_data("스타일수 기준")
+        # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
+        cache_timestamp = _cache_timestamp.isoformat() if _cache_timestamp else ""
+        headers = {
+            "Cache-Control": "public, max-age=3600",
+            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp)}"',
+        }
+        return Response(
+            content=json.dumps(data, ensure_ascii=False),
+            media_type="application/json",
+            headers=headers
+        )
     except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
         print(f"Unexpected error in /api/style-count: {error_detail}")
