@@ -83,8 +83,8 @@ def _find_week_numbers(ws: Worksheet) -> Tuple[int, int]:
     """엑셀 시트의 헤더 행에서 주차 번호를 찾습니다."""
     week_numbers = []
     
-    # 헤더 행을 확인 (일반적으로 1-4행)
-    for row in range(1, 5):
+    # 헤더 행을 확인 (일반적으로 1-4행, 더 넓은 범위로 확장)
+    for row in range(1, 6):  # 1-5행까지 확인
         # D열부터 L열까지 확인 (첫 번째 주차 그룹)
         for col_letter in ["D", "E", "F", "G", "H", "I", "J", "K", "L"]:
             try:
@@ -317,8 +317,12 @@ def should_update_cache() -> bool:
     return False
 
 
-def update_cache() -> None:
-    """캐시를 업데이트합니다. 매일 11시에만 실행됩니다."""
+def update_cache(force_sync: bool = False) -> None:
+    """캐시를 업데이트합니다. 매일 11시에만 실행됩니다.
+    
+    Args:
+        force_sync: True이면 OneDrive에서 강제로 파일을 동기화합니다.
+    """
     global _data_cache, _cache_timestamp
     
     # 기존 캐시 백업 (에러 발생 시 복구용)
@@ -327,9 +331,11 @@ def update_cache() -> None:
     
     with _cache_lock:
         try:
-            # OneDrive 동기화 (파일이 없는 경우만)
-            if ONEDRIVE_SHARE_LINK and not FILE_PATH.exists():
-                sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=3600, force_download=False)
+            # OneDrive 동기화 (파일이 없거나 강제 동기화 요청 시)
+            if ONEDRIVE_SHARE_LINK:
+                if not FILE_PATH.exists() or force_sync:
+                    # 강제 다운로드로 최신 파일 가져오기
+                    sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=0, force_download=True)
             
             # 데이터 로드
             quantity_data = load_summary("수량 기준")
@@ -536,6 +542,34 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Dict[str, Any
         raise HTTPException(status_code=500, detail=error_detail) from exc
 
 
+@app.post("/api/refresh")
+def refresh_cache(_: bool = Depends(verify_password)) -> Dict[str, Any]:
+    """캐시를 강제로 업데이트합니다. OneDrive에서 최신 파일을 가져와서 캐시를 갱신합니다."""
+    global _updating_cache
+    
+    try:
+        with _update_lock:
+            if _updating_cache:
+                return {"status": "already_updating", "message": "캐시 업데이트가 이미 진행 중입니다."}
+            
+            _updating_cache = True
+            try:
+                # 강제 동기화 및 캐시 업데이트
+                update_cache(force_sync=True)
+                return {
+                    "status": "success",
+                    "message": "캐시가 성공적으로 업데이트되었습니다.",
+                    "timestamp": _cache_timestamp.isoformat() if _cache_timestamp else None
+                }
+            finally:
+                _updating_cache = False
+    except Exception as exc:
+        error_detail = f"캐시 업데이트 실패: {str(exc)}"
+        print(f"Error refreshing cache: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_detail) from exc
+
+
 @app.on_event("startup")
 async def startup_event():
     """서버 시작 시 초기 캐시 업데이트 및 백그라운드 스레드 시작"""
@@ -577,7 +611,7 @@ async def startup_event():
                 with _update_lock:
                     if should_update_cache() and not _updating_cache:
                         _updating_cache = True
-                        update_cache()
+                        update_cache(force_sync=True)  # 매일 11시 업데이트 시 강제 동기화
                         _updating_cache = False
             except Exception:
                 _updating_cache = False
