@@ -291,8 +291,8 @@ def ensure_excel_file() -> Path:
 def should_update_cache() -> bool:
     """캐시를 업데이트해야 하는지 확인합니다.
     - 캐시가 없으면 업데이트
-    - 파일이 변경되었으면 업데이트
     - 오전 11시 이후이고 오늘 업데이트하지 않았으면 업데이트
+    - 단순 시간 기반 체크만 수행 (파일 변경 시간 체크 제거)
     """
     global _cache_timestamp
     
@@ -302,18 +302,11 @@ def should_update_cache() -> bool:
     if _cache_timestamp is None:
         return True
     
-    # 파일 수정 시간 확인
-    if FILE_PATH.exists():
-        file_mtime = datetime.fromtimestamp(FILE_PATH.stat().st_mtime)
-        # 파일이 캐시 이후에 수정되었으면 업데이트
-        if file_mtime > _cache_timestamp:
-            return True
-    
     # 오늘 날짜
     today = now.date()
     cache_date = _cache_timestamp.date()
     
-    # 오늘 업데이트했으면 스킵
+    # 오늘 업데이트했으면 스킵 (다음날 11시까지 캐시 사용)
     if cache_date == today:
         return False
     
@@ -325,7 +318,7 @@ def should_update_cache() -> bool:
 
 
 def update_cache() -> None:
-    """캐시를 업데이트합니다."""
+    """캐시를 업데이트합니다. 매일 11시에만 실행됩니다."""
     global _data_cache, _cache_timestamp
     
     # 기존 캐시 백업 (에러 발생 시 복구용)
@@ -334,21 +327,9 @@ def update_cache() -> None:
     
     with _cache_lock:
         try:
-            # 파일 수정 시간 확인
-            file_mtime = None
-            if FILE_PATH.exists():
-                file_mtime = datetime.fromtimestamp(FILE_PATH.stat().st_mtime)
-            
-            # 캐시가 있고 파일이 변경되지 않았으면 스킵
-            if _data_cache is not None and _cache_timestamp is not None:
-                if file_mtime and file_mtime <= _cache_timestamp:
-                    return  # 파일이 변경되지 않음
-            
-            # OneDrive 동기화 (파일이 없거나 오래된 경우만)
-            if ONEDRIVE_SHARE_LINK:
-                # 파일이 없거나 1시간 이상 지났을 때만 동기화
-                if not FILE_PATH.exists() or (file_mtime and (datetime.now() - file_mtime).total_seconds() > 3600):
-                    sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=3600, force_download=False)
+            # OneDrive 동기화 (파일이 없는 경우만)
+            if ONEDRIVE_SHARE_LINK and not FILE_PATH.exists():
+                sync_onedrive_file(ONEDRIVE_SHARE_LINK, FILE_PATH, sync_interval=3600, force_download=False)
             
             # 데이터 로드
             quantity_data = load_summary("수량 기준")
@@ -383,19 +364,15 @@ def update_cache() -> None:
                 pass
 
 
+# 백그라운드 업데이트 플래그
+_updating_cache = False
+_update_lock = threading.Lock()
+
 def get_cached_data(sheet_name: str) -> Dict[str, Any]:
-    """캐시된 데이터를 반환합니다. 필요시 업데이트합니다."""
-    global _data_cache
+    """캐시된 데이터를 반환합니다. 빠른 응답을 위해 캐시를 우선 사용합니다."""
+    global _data_cache, _updating_cache
     
-    # 업데이트가 필요하면 업데이트 (비동기로 처리하지 않고 동기적으로)
-    if should_update_cache():
-        update_cache()
-    
-    # 캐시가 없으면 강제 업데이트
-    if _data_cache is None:
-        update_cache()
-    
-    # 캐시에서 데이터 반환 시도
+    # 캐시가 있으면 즉시 반환 (가장 빠름 - 파일 읽기 없음)
     if _data_cache is not None:
         if sheet_name == "수량 기준":
             cached = _data_cache.get("quantity")
@@ -406,7 +383,7 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
             if cached and isinstance(cached, dict) and len(cached) > 0:
                 return cached
     
-    # 캐시가 없거나 유효하지 않으면 직접 로드 (fallback)
+    # 캐시가 없으면 직접 로드 (최초 로드 시에만 - 이후에는 백그라운드에서 업데이트)
     try:
         return load_summary(sheet_name)
     except Exception as e:
@@ -562,18 +539,48 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Dict[str, Any
 @app.on_event("startup")
 async def startup_event():
     """서버 시작 시 초기 캐시 업데이트 및 백그라운드 스레드 시작"""
-    # 초기 캐시 업데이트
-    update_cache()
+    # 초기 캐시 업데이트 (캐시가 없으면)
+    if _data_cache is None:
+        update_cache()
     
-    # 백그라운드 스레드에서 주기적으로 업데이트 체크
+    # 백그라운드 스레드에서 매일 11시에 업데이트 체크
     def background_update_check():
-        """백그라운드에서 주기적으로 업데이트 필요 여부를 체크합니다."""
+        """백그라운드에서 매일 11시에 업데이트를 수행합니다."""
+        global _updating_cache
+        
         while True:
-            time.sleep(600)  # 10분마다 체크 (메모리 부하 감소)
+            now = datetime.now()
+            
+            # 다음 업데이트 시간 계산 (오늘 11시 또는 내일 11시)
+            if now.hour < UPDATE_HOUR:
+                # 오늘 11시까지 대기
+                next_update = now.replace(hour=UPDATE_HOUR, minute=UPDATE_MINUTE, second=0, microsecond=0)
+            else:
+                # 내일 11시까지 대기
+                next_update = (now + timedelta(days=1)).replace(hour=UPDATE_HOUR, minute=UPDATE_MINUTE, second=0, microsecond=0)
+            
+            wait_seconds = (next_update - now).total_seconds()
+            
+            # 다음 업데이트 시간까지 대기 (최대 1시간씩 체크)
+            while wait_seconds > 0:
+                sleep_time = min(wait_seconds, 3600)  # 최대 1시간씩 체크
+                time.sleep(sleep_time)
+                wait_seconds -= sleep_time
+                
+                # 중간에 업데이트 시간이 되었는지 확인
+                now = datetime.now()
+                if now.hour >= UPDATE_HOUR and should_update_cache():
+                    break
+            
+            # 업데이트 시간이 되었는지 확인
             try:
-                if should_update_cache():
-                    update_cache()
+                with _update_lock:
+                    if should_update_cache() and not _updating_cache:
+                        _updating_cache = True
+                        update_cache()
+                        _updating_cache = False
             except Exception:
+                _updating_cache = False
                 pass  # 에러 발생해도 계속 실행
     
     thread = threading.Thread(target=background_update_check, daemon=True)
