@@ -445,11 +445,23 @@ _updating_cache = False
 _update_lock = threading.Lock()
 
 def get_cached_data(sheet_name: str) -> Dict[str, Any]:
-    """캐시된 데이터를 반환합니다. 빠른 응답을 위해 캐시를 우선 사용합니다."""
-    global _data_cache, _updating_cache
+    """캐시된 데이터를 반환합니다. 파일이 변경되었으면 새로 로드합니다."""
+    global _data_cache, _updating_cache, _cache_timestamp
     
-    # 캐시가 있으면 즉시 반환 (가장 빠름 - 파일 읽기 없음)
-    if _data_cache is not None:
+    # 파일 존재 확인 및 수정 시간 체크
+    file_changed = False
+    if FILE_PATH.exists() and _cache_timestamp is not None:
+        file_mtime_ts = FILE_PATH.stat().st_mtime
+        file_mtime = datetime.fromtimestamp(file_mtime_ts)
+        # 타임존 없이 비교 (둘 다 naive datetime)
+        cache_time_naive = _cache_timestamp.replace(tzinfo=None) if _cache_timestamp.tzinfo else _cache_timestamp
+        # 파일이 캐시 이후에 수정되었는지 확인 (1초 여유)
+        if file_mtime > cache_time_naive:
+            file_changed = True
+            print(f"파일이 변경되었습니다. 캐시 시간: {_cache_timestamp}, 파일 수정 시간: {file_mtime}")
+    
+    # 캐시가 있고 파일이 변경되지 않았으면 캐시 반환
+    if _data_cache is not None and not file_changed:
         if sheet_name == "수량 기준":
             cached = _data_cache.get("quantity")
             if cached and isinstance(cached, dict) and len(cached) > 0:
@@ -459,10 +471,25 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
             if cached and isinstance(cached, dict) and len(cached) > 0:
                 return cached
     
-    # 캐시가 없으면 직접 로드 (최초 로드 시에만 - 이후에는 백그라운드에서 업데이트)
+    # 캐시가 없거나 파일이 변경되었으면 새로 로드
+    print(f"데이터 새로 로드: sheet_name={sheet_name}, file_changed={file_changed}")
     try:
-        return load_summary(sheet_name)
+        data = load_summary(sheet_name)
+        # 캐시 업데이트 (파일이 변경된 경우)
+        if file_changed:
+            print("파일 변경으로 인해 캐시 업데이트 중...")
+            if _data_cache is None:
+                _data_cache = {}
+            if sheet_name == "수량 기준":
+                _data_cache["quantity"] = data
+            elif sheet_name == "스타일수 기준":
+                _data_cache["style_count"] = data
+            _cache_timestamp = datetime.now()
+        return data
     except Exception as e:
+        print(f"데이터 로드 오류: {e}")
+        import traceback
+        traceback.print_exc()
         # 최소한의 구조라도 반환하여 프론트엔드 에러 방지
         return {
             "nations": [],

@@ -664,17 +664,24 @@
         return pctValue ? `${qty} (${pctValue})` : qty;
       };
 
-      const buildDataset = (rows, { key, pctKey, label, color }) => ({
-        label,
-        data: rows.map((r) => r[key] ?? 0),
-        pctData: pctKey ? rows.map((r) => r[pctKey] ?? null) : null,
-        backgroundColor: color,
-        borderRadius: 10,
-        barThickness: 18,
-        maxBarThickness: 28,
-        categoryPercentage: 0.9,
-        barPercentage: 0.9,
-      });
+      const buildDataset = (rows, { key, pctKey, label, color }) => {
+        const dataset = {
+          label,
+          data: rows.map((r) => r[key] ?? 0),
+          pctData: pctKey ? rows.map((r) => r[pctKey] ?? null) : null,
+          backgroundColor: color,
+          borderRadius: 10,
+          barThickness: 18,
+          maxBarThickness: 28,
+          categoryPercentage: 0.9,
+          barPercentage: 0.9,
+        };
+        console.log(`buildDataset - ${label} (key: ${key}):`, {
+          sampleData: rows.slice(0, 2).map(r => ({ row: r, value: r[key] })),
+          dataValues: dataset.data.slice(0, 5)
+        });
+        return dataset;
+      };
 
       const destroyChart = (name) => {
         if (charts[name]) {
@@ -712,6 +719,9 @@
           
           const data = await resp.json();
           console.log("데이터 로드 성공:", Object.keys(data));
+          console.log("데이터 상세 - nations:", data.nations?.slice(0, 3));
+          console.log("데이터 상세 - items:", data.items?.slice(0, 3));
+          console.log("데이터 상세 - week_info:", data.week_info);
           const etag = resp.headers.get('ETag');
           if (etag && data) {
             data._etag = etag;
@@ -911,8 +921,22 @@
         const data = rows.filter(
           (row) => (row.code || row.country || "").toUpperCase() !== "TOTAL"
         );
+        
+        console.log("renderNations - 원본 데이터:", rows);
+        console.log("renderNations - 필터링된 데이터:", data);
+        console.log("renderNations - CURRENT_WEEK:", CURRENT_WEEK);
+        
         const labels = data.map((row) => row.code || row.country || "-");
         const { target, actual, targetPct, actualPct } = getWeekKeys(CURRENT_WEEK);
+        
+        console.log("renderNations - 사용할 키:", { target, actual, targetPct, actualPct });
+        
+        // 데이터 샘플 확인
+        if (data.length > 0) {
+          console.log("renderNations - 첫 번째 데이터 샘플:", data[0]);
+          console.log("renderNations - 첫 번째 데이터의 target 값:", data[0][target]);
+          console.log("renderNations - 첫 번째 데이터의 actual 값:", data[0][actual]);
+        }
 
         const datasets = [
           buildDataset(data, {
@@ -928,6 +952,8 @@
             color: palette.actual,
           }),
         ];
+        
+        console.log("renderNations - 생성된 datasets:", datasets);
         renderHorizontalChart("chart-nations", labels, datasets);
       }
 
@@ -1156,9 +1182,16 @@
           const items = data.items || [];
           const subcategories = data.sub_categories || data.subCategories || [];
 
+          console.log("initDashboard - nations 개수:", nations.length);
+          console.log("initDashboard - items 개수:", items.length);
+          console.log("initDashboard - CURRENT_TYPE:", CURRENT_TYPE);
+          console.log("initDashboard - CURRENT_WEEK:", CURRENT_WEEK);
+
           const totalRow = CURRENT_TYPE === "style-count"
             ? items.find((row) => (row.item || "").toUpperCase() === "TOTAL")
             : nations.find((row) => (row.code || "").toUpperCase() === "TOTAL");
+
+          console.log("initDashboard - totalRow:", totalRow);
 
           updateWeekLabels();
           updateKpis(totalRow);
