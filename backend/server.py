@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 
 import openpyxl
+from openpyxl.utils import get_column_letter
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -31,11 +32,17 @@ BASE_DIR = Path(__file__).resolve().parent
 EXCEL_FILENAME = "★26SS MLB 생산스케쥴_DASHBOARD.xlsx"
 DEFAULT_WORKBOOK = BASE_DIR / EXCEL_FILENAME
 
+# V2 엑셀 파일명
+EXCEL_FILENAME_V2 = "★26SS MLB 생산스케쥴_DASHBOARD_V2.xlsx"
+DEFAULT_WORKBOOK_V2 = BASE_DIR / EXCEL_FILENAME_V2
+
 # 환경 변수
 FILE_PATH = Path(os.getenv("SUMMARY_EXCEL", str(DEFAULT_WORKBOOK)))
+FILE_PATH_V2 = Path(os.getenv("SUMMARY_EXCEL_V2", str(DEFAULT_WORKBOOK_V2)))
 SHEET_NAME = os.getenv("SUMMARY_SHEET", "수량 기준")
 ONEDRIVE_SHARE_LINK = os.getenv("ONEDRIVE_FILE_URL", "")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "admin123")  # 기본값, 배포 시 변경 필수
+ONEDRIVE_SHARE_LINK_V2 = os.getenv("ONEDRIVE_FILE_URL_V2", "")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "MLB123")  # 기본값, 배포 시 변경 필수
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "3600"))  # 기본 1시간
 
 # 기본값 (주차를 찾을 수 없을 때 사용)
@@ -169,6 +176,11 @@ WEEK2: Optional[int] = None
 _data_cache: Optional[Dict[str, Any]] = None
 _cache_timestamp: Optional[datetime] = None
 _cache_lock = threading.Lock()
+
+# V2 데이터 캐시 시스템
+_data_cache_v2: Optional[Dict[str, Any]] = None
+_cache_timestamp_v2: Optional[datetime] = None
+_cache_lock_v2 = threading.Lock()
 
 # 업데이트 시간 설정 (오전 11시)
 UPDATE_HOUR = 11
@@ -358,6 +370,19 @@ def ensure_excel_file() -> Path:
     return FILE_PATH
 
 
+def ensure_excel_file_v2() -> Path:
+    """V2 엑셀 파일이 존재하는지 확인하고, 필요시 OneDrive에서 동기화합니다."""
+    # OneDrive 링크가 설정되어 있고 파일이 없으면 동기화 시도
+    if ONEDRIVE_SHARE_LINK_V2 and not FILE_PATH_V2.exists():
+        sync_onedrive_file(ONEDRIVE_SHARE_LINK_V2, FILE_PATH_V2, sync_interval=SYNC_INTERVAL, force_download=False)
+    
+    # 파일이 여전히 없으면 에러
+    if not FILE_PATH_V2.exists():
+        raise FileNotFoundError(f"Excel file V2 not found at {FILE_PATH_V2}. OneDrive sync may have failed.")
+    
+    return FILE_PATH_V2
+
+
 def should_update_cache() -> bool:
     """캐시를 업데이트해야 하는지 확인합니다.
     - 캐시가 없으면 업데이트
@@ -504,6 +529,69 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
         }
 
 
+def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
+    """V2 캐시된 데이터를 반환합니다. 파일이 변경되었으면 새로 로드합니다."""
+    global _data_cache_v2, _cache_timestamp_v2
+    
+    # 파일 존재 확인 및 수정 시간 체크
+    file_changed = False
+    if FILE_PATH_V2.exists() and _cache_timestamp_v2 is not None:
+        file_mtime_ts = FILE_PATH_V2.stat().st_mtime
+        file_mtime = datetime.fromtimestamp(file_mtime_ts)
+        # 타임존 없이 비교 (둘 다 naive datetime)
+        cache_time_naive = _cache_timestamp_v2.replace(tzinfo=None) if _cache_timestamp_v2.tzinfo else _cache_timestamp_v2
+        # 파일이 캐시 이후에 수정되었는지 확인 (1초 여유)
+        if file_mtime > cache_time_naive:
+            file_changed = True
+            print(f"V2 파일이 변경되었습니다. 캐시 시간: {_cache_timestamp_v2}, 파일 수정 시간: {file_mtime}")
+    
+    # 캐시가 있고 파일이 변경되지 않았으면 캐시 반환
+    if _data_cache_v2 is not None and not file_changed:
+        if sheet_name == "수량 기준":
+            cached = _data_cache_v2.get("quantity")
+            if cached and isinstance(cached, dict) and len(cached) > 0:
+                return cached
+        elif sheet_name == "스타일수 기준":
+            cached = _data_cache_v2.get("style_count")
+            if cached and isinstance(cached, dict) and len(cached) > 0:
+                return cached
+    
+    # 캐시가 없거나 파일이 변경되었으면 새로 로드
+    print(f"V2 데이터 새로 로드: sheet_name={sheet_name}, file_changed={file_changed}")
+    try:
+        data = load_summary_v2(sheet_name)
+        # 캐시 업데이트 (파일이 변경되었거나 캐시가 없는 경우)
+        if file_changed or _data_cache_v2 is None:
+            if file_changed:
+                print("V2 파일 변경으로 인해 캐시 업데이트 중...")
+            else:
+                print("V2 캐시 초기화 중...")
+            if _data_cache_v2 is None:
+                _data_cache_v2 = {}
+            if sheet_name == "수량 기준":
+                _data_cache_v2["quantity"] = data
+            elif sheet_name == "스타일수 기준":
+                _data_cache_v2["style_count"] = data
+            _cache_timestamp_v2 = datetime.now()
+        return data
+    except Exception as e:
+        print(f"V2 데이터 로드 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        # 최소한의 구조라도 반환하여 프론트엔드 에러 방지
+        return {
+            "nations": [],
+            "items": [],
+            "categories": [],
+            "sub_categories": [],
+            "week_info": {
+                "current_week": DEFAULT_WEEK1,
+                "next_week": DEFAULT_WEEK2,
+            },
+            "sheet_name": sheet_name,
+        }
+
+
 def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     """엑셀 파일에서 데이터를 로드하고 주차 정보를 포함하여 반환합니다."""
     global VALUE_COLUMNS, DETAIL_VALUE_COLUMNS, WEEK1, WEEK2
@@ -575,6 +663,126 @@ def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
         return result
     except Exception as e:
         error_msg = f"Unexpected error in load_summary: {str(e)}"
+        raise RuntimeError(error_msg) from e
+    finally:
+        if workbook:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+
+
+def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
+    """V2 엑셀 파일에서 데이터를 로드하고 주차 정보를 포함하여 반환합니다."""
+    global VALUE_COLUMNS, DETAIL_VALUE_COLUMNS, WEEK1, WEEK2
+    
+    target_sheet = sheet_name or SHEET_NAME
+    
+    # V2 파일 존재 확인 및 동기화
+    excel_path = ensure_excel_file_v2()
+    
+    workbook = None
+    try:
+        # read_only=True로 메모리 사용량 최소화
+        workbook = openpyxl.load_workbook(excel_path, data_only=True, read_only=True, keep_links=False)
+    except PermissionError as exc:
+        error_msg = (
+            f"엑셀 파일 V2에 접근할 수 없습니다. 파일이 다른 프로그램에서 열려있거나 "
+            f"OneDrive 동기화 중일 수 있습니다. 원본 에러: {exc}"
+        )
+        raise RuntimeError(error_msg) from exc
+    except Exception as exc:
+        raise RuntimeError(f"Failed to open workbook V2: {exc}") from exc
+
+    try:
+        available_sheets = workbook.sheetnames
+        
+        if target_sheet not in available_sheets:
+            raise RuntimeError(
+                f"Worksheet '{target_sheet}' not found in V2 file. Available sheets: {', '.join(available_sheets)}"
+            )
+        
+        sheet = workbook[target_sheet]
+        
+    except KeyError as exc:
+        if workbook:
+            workbook.close()
+        raise RuntimeError(f"Worksheet '{target_sheet}' not found in workbook V2") from exc
+
+    try:
+        # 헤더에서 주차 정보 추출
+        WEEK1, WEEK2 = _find_week_numbers(sheet)
+        
+        # 주차 정보에 따라 동적으로 컬럼 생성
+        VALUE_COLUMNS = _build_value_columns(WEEK1, WEEK2, "C", "D")
+        DETAIL_VALUE_COLUMNS = _build_value_columns(WEEK1, WEEK2, "P", "Q")
+        
+        data = {}
+        for name, config in BLOCK_LAYOUT:
+            try:
+                current_config = config.copy()
+                if config.get("use_detail_columns"):
+                    current_config["value_columns"] = DETAIL_VALUE_COLUMNS
+                elif "value_columns" not in current_config:
+                    current_config["value_columns"] = VALUE_COLUMNS
+                
+                extracted = _extract_block(sheet, current_config)
+                data[name] = extracted
+            except Exception as e:
+                data[name] = []
+        
+        # V2 특화: E18, F18, G18 값 추출
+        summary_cells = {}
+        try:
+            summary_cells["E18"] = sheet["E18"].value if sheet["E18"].value is not None else 0
+            summary_cells["F18"] = sheet["F18"].value if sheet["F18"].value is not None else 0
+            summary_cells["G18"] = sheet["G18"].value if sheet["G18"].value is not None else 0
+        except Exception as e:
+            print(f"Warning: Could not extract summary cells (E18, F18, G18): {e}")
+            summary_cells = {"E18": 0, "F18": 0, "G18": 0}
+        
+        # V2 특화: 협력사 데이터 추출 (AJ~AY 열, 18행)
+        suppliers_data = []
+        try:
+            # AJ는 36번째 열, AY는 51번째 열
+            supplier_start_col = 36  # AJ
+            supplier_end_col = 51    # AY
+            supplier_row = 18
+            
+            # 열 라벨 찾기 (보통 5행 또는 4행에 있을 것으로 예상)
+            label_row = 5
+            for col_num in range(supplier_start_col, supplier_end_col + 1):
+                try:
+                    col_letter = get_column_letter(col_num)
+                    label = sheet[f"{col_letter}{label_row}"].value
+                    value = sheet[f"{col_letter}{supplier_row}"].value if sheet[f"{col_letter}{supplier_row}"].value is not None else 0
+                    
+                    if label and str(label).strip():  # 라벨이 있는 경우만 추가
+                        suppliers_data.append({
+                            "name": str(label).strip(),
+                            "value": value
+                        })
+                except Exception as e:
+                    print(f"Warning: Could not extract supplier data from column {col_letter}: {e}")
+                    continue
+        except Exception as e:
+            print(f"Warning: Could not extract suppliers data: {e}")
+            suppliers_data = []
+        
+        result = {
+            **data,
+            "week_info": {
+                "current_week": WEEK1,
+                "next_week": WEEK2,
+            },
+            "sheet_name": target_sheet,
+            "summary_cells": summary_cells,  # E18, F18, G18
+            "suppliers": suppliers_data,  # 협력사 데이터
+        }
+        
+        return result
+    except Exception as e:
+        error_msg = f"Unexpected error in load_summary_v2: {str(e)}"
         raise RuntimeError(error_msg) from e
     finally:
         if workbook:
@@ -714,6 +922,84 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Response:
         raise HTTPException(status_code=500, detail=error_detail) from exc
 
 
+@app.get("/api/v2/quantity")
+def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
+    """V2 수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
+    try:
+        data = get_cached_data_v2("수량 기준")
+        
+        # 캐시 타임스탬프 및 파일 수정 시간 추가
+        cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
+        file_mtime = None
+        if FILE_PATH_V2.exists():
+            file_mtime = datetime.fromtimestamp(FILE_PATH_V2.stat().st_mtime).isoformat()
+        
+        # 메타데이터 추가
+        data["_meta"] = {
+            "cache_timestamp": cache_timestamp,
+            "file_modified_time": file_mtime,
+            "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
+        }
+        
+        # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
+        cache_timestamp_str = cache_timestamp or ""
+        headers = {
+            "Cache-Control": "public, max-age=3600",
+            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp_str)}"',
+            "X-Cache-Timestamp": cache_timestamp_str,
+            "X-File-Modified": file_mtime or "",
+        }
+        return Response(
+            content=json.dumps(data, ensure_ascii=False),
+            media_type="application/json",
+            headers=headers
+        )
+    except Exception as exc:
+        error_detail = f"Unexpected error: {str(exc)}"
+        print(f"Unexpected error in /api/v2/quantity: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_detail) from exc
+
+
+@app.get("/api/v2/style-count")
+def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
+    """V2 스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
+    try:
+        data = get_cached_data_v2("스타일수 기준")
+        
+        # 캐시 타임스탬프 및 파일 수정 시간 추가
+        cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
+        file_mtime = None
+        if FILE_PATH_V2.exists():
+            file_mtime = datetime.fromtimestamp(FILE_PATH_V2.stat().st_mtime).isoformat()
+        
+        # 메타데이터 추가
+        data["_meta"] = {
+            "cache_timestamp": cache_timestamp,
+            "file_modified_time": file_mtime,
+            "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
+        }
+        
+        # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
+        cache_timestamp_str = cache_timestamp or ""
+        headers = {
+            "Cache-Control": "public, max-age=3600",
+            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp_str)}"',
+            "X-Cache-Timestamp": cache_timestamp_str,
+            "X-File-Modified": file_mtime or "",
+        }
+        return Response(
+            content=json.dumps(data, ensure_ascii=False),
+            media_type="application/json",
+            headers=headers
+        )
+    except Exception as exc:
+        error_detail = f"Unexpected error: {str(exc)}"
+        print(f"Unexpected error in /api/v2/style-count: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_detail) from exc
+
+
 @app.post("/api/refresh")
 def refresh_cache(_: bool = Depends(verify_password)) -> Dict[str, Any]:
     """캐시를 강제로 업데이트합니다. OneDrive에서 최신 파일을 가져와서 캐시를 갱신합니다."""
@@ -742,6 +1028,36 @@ def refresh_cache(_: bool = Depends(verify_password)) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=error_detail) from exc
 
 
+@app.post("/api/v2/refresh")
+def refresh_cache_v2(_: bool = Depends(verify_password)) -> Dict[str, Any]:
+    """V2 캐시를 강제로 업데이트합니다. OneDrive에서 최신 파일을 가져와서 캐시를 갱신합니다."""
+    global _data_cache_v2, _cache_timestamp_v2
+    
+    try:
+        # V2 캐시 강제 초기화 및 재로드
+        _data_cache_v2 = None
+        _cache_timestamp_v2 = None
+        
+        # 강제 동기화
+        if ONEDRIVE_SHARE_LINK_V2:
+            ensure_excel_file_v2()
+        
+        # 데이터 재로드 (캐시 갱신)
+        get_cached_data_v2("수량 기준")
+        get_cached_data_v2("스타일수 기준")
+        
+        return {
+            "status": "success",
+            "message": "V2 캐시가 성공적으로 업데이트되었습니다.",
+            "timestamp": _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
+        }
+    except Exception as exc:
+        error_detail = f"V2 캐시 업데이트 실패: {str(exc)}"
+        print(f"Error refreshing V2 cache: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_detail) from exc
+
+
 @app.get("/api/export/excel")
 def export_excel(_: bool = Depends(verify_password)) -> FileResponse:
     """SUMMARY 엑셀 파일을 다운로드합니다."""
@@ -766,6 +1082,34 @@ def export_excel(_: bool = Depends(verify_password)) -> FileResponse:
     except Exception as exc:
         error_detail = f"엑셀 파일 다운로드 실패: {str(exc)}"
         print(f"Error exporting excel: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_detail) from exc
+
+
+@app.get("/api/v2/export/excel")
+def export_excel_v2(_: bool = Depends(verify_password)) -> FileResponse:
+    """V2 SUMMARY 엑셀 파일을 다운로드합니다."""
+    try:
+        excel_path = ensure_excel_file_v2()
+        
+        if not excel_path.exists():
+            raise HTTPException(status_code=404, detail="V2 엑셀 파일을 찾을 수 없습니다.")
+        
+        # 파일명 인코딩 처리 (한글 파일명 지원)
+        filename = excel_path.name
+        return FileResponse(
+            path=str(excel_path),
+            filename=filename,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"V2 엑셀 파일을 찾을 수 없습니다: {str(exc)}")
+    except Exception as exc:
+        error_detail = f"V2 엑셀 파일 다운로드 실패: {str(exc)}"
+        print(f"Error exporting V2 excel: {error_detail}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=error_detail) from exc
 
