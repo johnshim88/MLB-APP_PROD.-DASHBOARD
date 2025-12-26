@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, FileResponse
 from openpyxl.worksheet.worksheet import Worksheet
 import secrets
 
@@ -562,6 +562,27 @@ def healthcheck() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/cache-status")
+def get_cache_status(_: bool = Depends(verify_password)) -> Dict[str, Any]:
+    """캐시 상태 정보를 반환합니다."""
+    file_mtime = None
+    file_size = None
+    if FILE_PATH.exists():
+        stat = FILE_PATH.stat()
+        file_mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
+        file_size = stat.st_size
+    
+    return {
+        "cache_timestamp": _cache_timestamp.isoformat() if _cache_timestamp else None,
+        "file_modified_time": file_mtime,
+        "file_size": file_size,
+        "file_exists": FILE_PATH.exists(),
+        "cache_age_seconds": (datetime.now() - _cache_timestamp).total_seconds() if _cache_timestamp else None,
+        "next_update_time": None,  # 다음 업데이트 시간 계산
+        "has_cache": _data_cache is not None,
+    }
+
+
 @app.get("/api/sheets")
 def list_sheets() -> Dict[str, Any]:
     """엑셀 파일의 시트 목록을 반환 (디버깅용)"""
@@ -593,11 +614,27 @@ def get_quantity_summary(_: bool = Depends(verify_password)) -> Response:
     """수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
         data = get_cached_data("수량 기준")
+        
+        # 캐시 타임스탬프 및 파일 수정 시간 추가
+        cache_timestamp = _cache_timestamp.isoformat() if _cache_timestamp else None
+        file_mtime = None
+        if FILE_PATH.exists():
+            file_mtime = datetime.fromtimestamp(FILE_PATH.stat().st_mtime).isoformat()
+        
+        # 메타데이터 추가
+        data["_meta"] = {
+            "cache_timestamp": cache_timestamp,
+            "file_modified_time": file_mtime,
+            "cache_age_seconds": (datetime.now() - _cache_timestamp).total_seconds() if _cache_timestamp else None,
+        }
+        
         # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
-        cache_timestamp = _cache_timestamp.isoformat() if _cache_timestamp else ""
+        cache_timestamp_str = cache_timestamp or ""
         headers = {
             "Cache-Control": "public, max-age=3600",
-            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp)}"',
+            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp_str)}"',
+            "X-Cache-Timestamp": cache_timestamp_str,
+            "X-File-Modified": file_mtime or "",
         }
         return Response(
             content=json.dumps(data, ensure_ascii=False),
@@ -616,11 +653,27 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Response:
     """스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
         data = get_cached_data("스타일수 기준")
+        
+        # 캐시 타임스탬프 및 파일 수정 시간 추가
+        cache_timestamp = _cache_timestamp.isoformat() if _cache_timestamp else None
+        file_mtime = None
+        if FILE_PATH.exists():
+            file_mtime = datetime.fromtimestamp(FILE_PATH.stat().st_mtime).isoformat()
+        
+        # 메타데이터 추가
+        data["_meta"] = {
+            "cache_timestamp": cache_timestamp,
+            "file_modified_time": file_mtime,
+            "cache_age_seconds": (datetime.now() - _cache_timestamp).total_seconds() if _cache_timestamp else None,
+        }
+        
         # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
-        cache_timestamp = _cache_timestamp.isoformat() if _cache_timestamp else ""
+        cache_timestamp_str = cache_timestamp or ""
         headers = {
             "Cache-Control": "public, max-age=3600",
-            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp)}"',
+            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp_str)}"',
+            "X-Cache-Timestamp": cache_timestamp_str,
+            "X-File-Modified": file_mtime or "",
         }
         return Response(
             content=json.dumps(data, ensure_ascii=False),
@@ -658,6 +711,34 @@ def refresh_cache(_: bool = Depends(verify_password)) -> Dict[str, Any]:
     except Exception as exc:
         error_detail = f"캐시 업데이트 실패: {str(exc)}"
         print(f"Error refreshing cache: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_detail) from exc
+
+
+@app.get("/api/export/excel")
+def export_excel(_: bool = Depends(verify_password)) -> FileResponse:
+    """SUMMARY 엑셀 파일을 다운로드합니다."""
+    try:
+        excel_path = ensure_excel_file()
+        
+        if not excel_path.exists():
+            raise HTTPException(status_code=404, detail="엑셀 파일을 찾을 수 없습니다.")
+        
+        # 파일명 인코딩 처리 (한글 파일명 지원)
+        filename = excel_path.name
+        return FileResponse(
+            path=str(excel_path),
+            filename=filename,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"엑셀 파일을 찾을 수 없습니다: {str(exc)}")
+    except Exception as exc:
+        error_detail = f"엑셀 파일 다운로드 실패: {str(exc)}"
+        print(f"Error exporting excel: {error_detail}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=error_detail) from exc
 

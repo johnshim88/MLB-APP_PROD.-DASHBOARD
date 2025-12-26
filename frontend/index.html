@@ -272,6 +272,10 @@
     <div id="dashboard-content" class="hidden">
       <header>
         <h1>26SS MLB 생산 스케줄 대시보드</h1>
+        <div id="data-info" style="margin-top: 10px; font-size: 0.85rem; color: var(--muted);">
+          <span id="data-timestamp">데이터 로딩 중...</span>
+          <button id="refresh-btn" style="margin-left: 10px; padding: 4px 12px; font-size: 0.8rem; border: 1px solid var(--tab-inactive); border-radius: 4px; background: var(--card); cursor: pointer;">새로고침</button>
+        </div>
       </header>
 
       <!-- 기준 선택 탭 -->
@@ -563,6 +567,84 @@
         document.getElementById("kpi-week-label").textContent = `${CURRENT_WEEK}주`;
         document.getElementById("kpi-week-label2").textContent = `${CURRENT_WEEK}주`;
       }
+      
+      function updateDataTimestamp(data) {
+        const timestampEl = document.getElementById("data-timestamp");
+        if (!timestampEl) return;
+        
+        const meta = data._meta || {};
+        const cacheTime = meta.cache_timestamp;
+        const fileTime = meta.file_modified_time;
+        const cacheAge = meta.cache_age_seconds;
+        
+        if (cacheTime) {
+          const date = new Date(cacheTime);
+          const dateStr = date.toLocaleString("ko-KR", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit"
+          });
+          
+          let ageStr = "";
+          if (cacheAge !== null && cacheAge !== undefined) {
+            const hours = Math.floor(cacheAge / 3600);
+            const minutes = Math.floor((cacheAge % 3600) / 60);
+            if (hours > 0) {
+              ageStr = ` (${hours}시간 ${minutes}분 전)`;
+            } else if (minutes > 0) {
+              ageStr = ` (${minutes}분 전)`;
+            } else {
+              ageStr = ` (방금 전)`;
+            }
+          }
+          
+          timestampEl.textContent = `데이터 업데이트: ${dateStr}${ageStr}`;
+          if (fileTime) {
+            const fileDate = new Date(fileTime);
+            const fileDateStr = fileDate.toLocaleString("ko-KR", {
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit"
+            });
+            timestampEl.textContent += ` | 파일 수정: ${fileDateStr}`;
+          }
+        } else {
+          timestampEl.textContent = "데이터 타임스탬프 정보 없음";
+        }
+      }
+      
+      // 새로고침 버튼 이벤트
+      document.addEventListener("DOMContentLoaded", () => {
+        const refreshBtn = document.getElementById("refresh-btn");
+        if (refreshBtn) {
+          refreshBtn.addEventListener("click", async () => {
+            try {
+              showLoading("데이터 새로고침 중...");
+              const resp = await fetch(`${API_BASE_URL}/api/refresh`, {
+                method: "POST",
+                headers: AUTH_HEADERS
+              });
+              if (resp.ok) {
+                const result = await resp.json();
+                alert(result.message || "데이터가 새로고침되었습니다.");
+                // 대시보드 다시 로드
+                cachedData = null;
+                await initDashboard();
+              } else {
+                throw new Error("새로고침 실패");
+              }
+            } catch (error) {
+              console.error("새로고침 오류:", error);
+              alert("데이터 새로고침에 실패했습니다.");
+              hideLoading();
+            }
+          });
+        }
+      });
 
       const datasetLabelFormatter = (value, context) => {
         const pctSeries = context.dataset.pctData;
@@ -1108,6 +1190,9 @@
             initSubcategorySelect([]);
             renderSubcategoryChart([], null);
           }
+          
+          // 데이터 타임스탬프 표시
+          updateDataTimestamp(data);
           
           // 모든 렌더링이 완료된 후 로딩 숨김
           hideLoading();
