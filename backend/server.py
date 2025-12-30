@@ -1259,13 +1259,34 @@ def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
     except FileNotFoundError as fnf_exc:
         # V2 파일이 없는 경우 명확한 에러 메시지
         error_detail = f"V2 Excel file not found. Please check Render environment variables (ONEDRIVE_SHARE_LINK_V2) and logs."
-        print(f"FileNotFoundError in /api/v2/quantity: {fnf_exc}")
-        print(traceback.format_exc())
+        print(f"ERROR: FileNotFoundError in /api/v2/quantity: {fnf_exc}")
+        import traceback
+        print("Full traceback:")
+        traceback.print_exc()
         raise HTTPException(status_code=404, detail=error_detail) from fnf_exc
+    except ValueError as ve:
+        # 데이터 유효성 검사 실패
+        error_detail = f"Data validation failed: {str(ve)}"
+        print(f"ERROR: ValueError in /api/v2/quantity: {ve}")
+        import traceback
+        print("Full traceback:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=error_detail) from ve
+    except RuntimeError as re:
+        # V2 데이터 로드 실패
+        error_detail = f"Failed to load V2 data: {str(re)}"
+        print(f"ERROR: RuntimeError in /api/v2/quantity: {re}")
+        import traceback
+        print("Full traceback:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=error_detail) from re
     except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
-        print(f"Unexpected error in /api/v2/quantity: {error_detail}")
-        print(traceback.format_exc())
+        print(f"ERROR: Unexpected error in /api/v2/quantity: {error_detail}")
+        print(f"Error type: {type(exc).__name__}")
+        import traceback
+        print("Full traceback:")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=error_detail) from exc
 
 
@@ -1319,47 +1340,6 @@ def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
     except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
         print(f"Unexpected error in /api/v2/style-count: {error_detail}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_detail) from exc
-
-
-@app.get("/api/v2/quantity")
-def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
-    """V2 수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
-    try:
-        print(f"DEBUG: /api/v2/quantity 엔드포인트 호출됨")
-        data = get_cached_data_v2("수량 기준")
-        print(f"DEBUG: /api/v2/quantity - 데이터 로드 완료. nations: {len(data.get('nations', []))}개, items: {len(data.get('items', []))}개")
-        
-        # 캐시 타임스탬프 및 파일 수정 시간 추가
-        cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
-        file_mtime = None
-        if FILE_PATH_V2.exists():
-            file_mtime = datetime.fromtimestamp(FILE_PATH_V2.stat().st_mtime).isoformat()
-        
-        # 메타데이터 추가
-        data["_meta"] = {
-            "cache_timestamp": cache_timestamp,
-            "file_modified_time": file_mtime,
-            "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
-        }
-        
-        # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
-        cache_timestamp_str = cache_timestamp or ""
-        headers = {
-            "Cache-Control": "public, max-age=3600",
-            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp_str)}"',
-            "X-Cache-Timestamp": cache_timestamp_str,
-            "X-File-Modified": file_mtime or "",
-        }
-        return Response(
-            content=json.dumps(data, ensure_ascii=False),
-            media_type="application/json",
-            headers=headers
-        )
-    except Exception as exc:
-        error_detail = f"Unexpected error: {str(exc)}"
-        print(f"Unexpected error in /api/v2/quantity: {error_detail}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=error_detail) from exc
 
