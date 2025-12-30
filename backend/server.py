@@ -1144,6 +1144,12 @@ def healthcheck() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/v2/auth/verify")
+def verify_auth(_: bool = Depends(verify_password)) -> Dict[str, str]:
+    """인증 검증 전용 엔드포인트 (파일 로드 없이 인증만 확인)"""
+    return {"status": "authenticated", "message": "Authentication successful"}
+
+
 @app.get("/api/password-info")
 def get_password_info() -> Dict[str, Any]:
     """비밀번호 설정 정보를 반환합니다 (디버깅용, 보안상 실제 비밀번호는 반환하지 않음)"""

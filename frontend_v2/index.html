@@ -524,9 +524,9 @@
           "Authorization": `Basic ${encodedPassword}`
         };
 
-        // 로그인 검증을 위해 /api/v2/quantity 엔드포인트 사용 (인증 필요)
-        console.log("API 호출:", `${API_BASE_URL}/api/v2/quantity`);
-        fetch(`${API_BASE_URL}/api/v2/quantity`, {
+        // 로그인 검증을 위해 /api/v2/auth/verify 엔드포인트 사용 (파일 로드 없이 인증만 확인)
+        console.log("API 호출:", `${API_BASE_URL}/api/v2/auth/verify`);
+        fetch(`${API_BASE_URL}/api/v2/auth/verify`, {
           headers: AUTH_HEADERS
         })
           .then(resp => {
