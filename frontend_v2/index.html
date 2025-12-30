@@ -802,7 +802,8 @@
             headers['If-None-Match'] = cachedData._etag;
           }
           
-          console.log("데이터 로드 시도:", DATA_URL);
+          // 성능 측정 시작
+          const loadStartTime = performance.now();
           const resp = await fetch(DATA_URL, {
             headers: headers,
             cache: 'no-cache',  // 브라우저 HTTP 캐시는 저장하지 않지만, 조건부 요청은 가능
@@ -829,14 +830,17 @@
           
           // 304 Not Modified: 데이터가 변경되지 않았으면 메모리 캐시 사용 (매우 빠름)
           if (resp.status === 304) {
-            console.log("데이터 변경 없음 (304), 메모리 캐시 사용");
+            const loadTime = (performance.now() - loadStartTime).toFixed(0);
+            console.log(`데이터 변경 없음 (304), 메모리 캐시 사용 (${loadTime}ms)`);
             return cachedData;
           }
           
           // 200 OK: 새로운 데이터 받기
+          const parseStartTime = performance.now();
           const data = await resp.json();
-          console.log("데이터 로드 성공:", Object.keys(data));
-          console.log("데이터 상세 - week_info:", data.week_info);
+          const parseTime = (performance.now() - parseStartTime).toFixed(0);
+          const loadTime = (performance.now() - loadStartTime).toFixed(0);
+          console.log(`데이터 로드 성공 (${loadTime}ms, 파싱: ${parseTime}ms)`);
           
           // ETag 저장 (다음 요청에서 조건부 요청에 사용)
           const etag = resp.headers.get('ETag');
@@ -1811,31 +1815,35 @@
             }
           }
           
+          const renderStartTime = performance.now();
           const nations = data.nations || [];
           const items = data.items || [];
           const subcategories = data.sub_categories || data.subCategories || [];
-
-          console.log("initDashboard - nations 개수:", nations.length);
-          console.log("initDashboard - items 개수:", items.length);
-          console.log("initDashboard - CURRENT_TYPE:", CURRENT_TYPE);
-          console.log("initDashboard - CURRENT_WEEK:", CURRENT_WEEK);
 
           const totalRow = CURRENT_TYPE === "style-count"
             ? items.find((row) => (row.item || "").toUpperCase() === "TOTAL")
             : nations.find((row) => (row.code || "").toUpperCase() === "TOTAL");
 
-          console.log("initDashboard - totalRow:", totalRow);
-
           const summaryCells = data.summary_cells || {};
           const suppliers = data.suppliers || [];
           
+          // 차트 렌더링 (병렬 처리 불가하지만 순서 최적화)
           updateWeekLabels();
           updateKpis(totalRow, summaryCells);
+          
+          // 큰 차트부터 먼저 렌더링 (사용자가 먼저 보게)
           renderDonut(totalRow, summaryCells);
           renderNations(nations);
           renderItems(items);
-          renderSubcategoryChart(subcategories);
-          renderSuppliers(suppliers);
+          
+          // 작은 차트는 나중에 렌더링 (사용자가 스크롤하면서 볼 수 있음)
+          requestAnimationFrame(() => {
+            renderSubcategoryChart(subcategories);
+            renderSuppliers(suppliers);
+          });
+          
+          const renderTime = (performance.now() - renderStartTime).toFixed(0);
+          console.log(`대시보드 렌더링 완료 (${renderTime}ms)`);
           
           // 데이터 타임스탬프 표시
           updateDataTimestamp(data);

@@ -753,8 +753,6 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     
     # V2 파일 존재 확인 및 동기화
     excel_path = ensure_excel_file_v2()
-    print(f"DEBUG: load_summary_v2 - 사용할 파일 경로: {excel_path}")
-    print(f"DEBUG: load_summary_v2 - 파일 존재 여부: {excel_path.exists()}")
     
     if not excel_path.exists():
         raise FileNotFoundError(f"V2 Excel file not found: {excel_path}")
@@ -780,17 +778,11 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     except Exception as e:
         print(f"Warning: Could not validate file format: {e}")
     
-    print(f"DEBUG: load_summary_v2 - 대상 시트: {target_sheet}")
-    
     workbook = None
     try:
         # read_only=True로 메모리 사용량 최소화
-        # data_only=False로 변경하여 수식도 읽을 수 있도록 함 (수식이 계산되지 않은 경우 대비)
-        print(f"DEBUG: 엑셀 파일 열기 시도 중...")
         # data_only=True로 먼저 시도 (계산된 값 읽기)
-        # 만약 값이 모두 None이면 data_only=False로 재시도
         workbook = openpyxl.load_workbook(excel_path, data_only=True, read_only=True, keep_links=False)
-        print(f"DEBUG: 엑셀 파일 열기 성공. 사용 가능한 시트: {workbook.sheetnames}")
     except PermissionError as exc:
         error_msg = (
             f"엑셀 파일 V2에 접근할 수 없습니다. 파일이 다른 프로그램에서 열려있거나 "
@@ -1251,9 +1243,7 @@ def get_quantity_summary(_: bool = Depends(verify_password)) -> Response:
 def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
     """V2 수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
-        print(f"DEBUG: /api/v2/quantity 엔드포인트 호출됨")
         data = get_cached_data_v2("수량 기준")
-        print(f"DEBUG: /api/v2/quantity - 데이터 로드 완료. nations: {len(data.get('nations', []))}개, items: {len(data.get('items', []))}개")
         
         # 캐시 타임스탬프 및 파일 수정 시간 추가 (V2 버전)
         cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
@@ -1270,14 +1260,18 @@ def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
         
         # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
         cache_timestamp_str = cache_timestamp or ""
+        # ETag 생성 최적화: week_info만 사용하여 해시 계산
+        week_info_str = json.dumps(data.get("week_info", {}), sort_keys=True, ensure_ascii=False)
+        etag = f'"{hash(week_info_str + cache_timestamp_str)}"'
         headers = {
-            "Cache-Control": "public, max-age=3600",
-            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp_str)}"',
+            "Cache-Control": "public, max-age=3600, stale-while-revalidate=60",
+            "ETag": etag,
             "X-Cache-Timestamp": cache_timestamp_str,
             "X-File-Modified": file_mtime or "",
         }
+        # JSON 직렬화 최적화 (separators로 공백 제거하여 크기 감소)
         return Response(
-            content=json.dumps(data, ensure_ascii=False),
+            content=json.dumps(data, ensure_ascii=False, separators=(',', ':')),
             media_type="application/json",
             headers=headers
         )
@@ -1326,9 +1320,7 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Response:
 def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
     """V2 스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
-        print(f"DEBUG: /api/v2/style-count 엔드포인트 호출됨")
         data = get_cached_data_v2("스타일수 기준")
-        print(f"DEBUG: /api/v2/style-count - 데이터 로드 완료. nations: {len(data.get('nations', []))}개, items: {len(data.get('items', []))}개")
         
         # 캐시 타임스탬프 및 파일 수정 시간 추가 (V2 버전)
         cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
@@ -1345,14 +1337,18 @@ def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
         
         # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
         cache_timestamp_str = cache_timestamp or ""
+        # ETag 생성 최적화: week_info만 사용하여 해시 계산
+        week_info_str = json.dumps(data.get("week_info", {}), sort_keys=True, ensure_ascii=False)
+        etag = f'"{hash(week_info_str + cache_timestamp_str)}"'
         headers = {
-            "Cache-Control": "public, max-age=3600",
-            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp_str)}"',
+            "Cache-Control": "public, max-age=3600, stale-while-revalidate=60",
+            "ETag": etag,
             "X-Cache-Timestamp": cache_timestamp_str,
             "X-File-Modified": file_mtime or "",
         }
+        # JSON 직렬화 최적화 (separators로 공백 제거하여 크기 감소)
         return Response(
-            content=json.dumps(data, ensure_ascii=False),
+            content=json.dumps(data, ensure_ascii=False, separators=(',', ':')),
             media_type="application/json",
             headers=headers
         )
@@ -1367,41 +1363,6 @@ def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
         print(f"Unexpected error in /api/v2/style-count: {error_detail}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=error_detail) from exc
-
-
-@app.get("/api/v2/style-count")
-def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
-    """V2 스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
-    try:
-        data = get_cached_data_v2("스타일수 기준")
-        
-        # 캐시 타임스탬프 및 파일 수정 시간 추가
-        cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
-        file_mtime = None
-        if FILE_PATH_V2.exists():
-            file_mtime = datetime.fromtimestamp(FILE_PATH_V2.stat().st_mtime).isoformat()
-        
-        # 메타데이터 추가
-        data["_meta"] = {
-            "cache_timestamp": cache_timestamp,
-            "file_modified_time": file_mtime,
-            "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
-        }
-        
-        # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
-        cache_timestamp_str = cache_timestamp or ""
-        headers = {
-            "Cache-Control": "public, max-age=3600",
-            "ETag": f'"{hash(str(data.get("week_info", {})) + cache_timestamp_str)}"',
-            "X-Cache-Timestamp": cache_timestamp_str,
-            "X-File-Modified": file_mtime or "",
-        }
-        return Response(
-            content=json.dumps(data, ensure_ascii=False),
-            media_type="application/json",
-            headers=headers
-        )
-    except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
         print(f"Unexpected error in /api/v2/style-count: {error_detail}")
         print(traceback.format_exc())
