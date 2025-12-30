@@ -91,6 +91,25 @@ def download_from_onedrive_share_link(share_link: str, output_path: Path) -> boo
                 # embed가 없으면 download 추가
                 download_url = share_link.replace("?", "/download?")
         
+        # Google Sheets 링크 처리 (docs.google.com/spreadsheets)
+        elif "docs.google.com/spreadsheets" in share_link:
+            print(f"Detected Google Sheets link: {share_link}")
+            # Google Sheets 공유 링크에서 파일 ID 추출
+            # 형식: https://docs.google.com/spreadsheets/d/FILE_ID/edit?usp=sharing
+            file_id = None
+            if "/spreadsheets/d/" in share_link:
+                parts = share_link.split("/spreadsheets/d/")
+                if len(parts) > 1:
+                    file_id = parts[1].split("/")[0].split("?")[0]
+            
+            if file_id:
+                # Google Sheets를 Excel 형식으로 다운로드
+                download_url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+                print(f"Converted Google Sheets link to Excel download URL: {download_url}")
+            else:
+                print(f"Warning: Could not extract file ID from Google Sheets link: {share_link}")
+                download_url = share_link
+        
         # Google Drive 링크 처리
         elif "drive.google.com" in share_link:
             print(f"Detected Google Drive link: {share_link}")
@@ -113,7 +132,8 @@ def download_from_onedrive_share_link(share_link: str, output_path: Path) -> boo
             
             if file_id:
                 # Google Drive 직접 다운로드 링크 생성
-                download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+                # 큰 파일의 경우 confirm 파라미터가 필요할 수 있음
+                download_url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
                 print(f"Converted Google Drive link to download URL: {download_url}")
             else:
                 print(f"Warning: Could not extract file ID from Google Drive link: {share_link}")
@@ -131,26 +151,72 @@ def download_from_onedrive_share_link(share_link: str, output_path: Path) -> boo
         
         print(f"Attempting to download from: {download_url}")
         
-        # 파일 다운로드
+        # 파일 다운로드 (Google Drive 바이러스 스캔 페이지 처리 포함)
         with httpx.Client(follow_redirects=True, timeout=60.0) as client:
-            with client.stream("GET", download_url) as response:
-                if response.status_code == 200:
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(output_path, "wb") as f:
-                        for chunk in response.iter_bytes():
-                            f.write(chunk)
-                    print(f"Successfully downloaded file to {output_path}")
-                    return True
-                else:
-                    print(f"Failed to download file. Status code: {response.status_code}")
-                    print(f"Response headers: {dict(response.headers)}")
-                    # 응답 본문 일부 읽기 (에러 메시지 확인용)
-                    try:
-                        error_text = response.text[:500] if hasattr(response, 'text') else "N/A"
-                        print(f"Error response: {error_text}")
-                    except:
-                        pass
+            response = client.get(download_url, follow_redirects=True)
+            
+            # Google Drive 바이러스 스캔 경고 페이지 처리
+            if "drive.google.com" in download_url and response.status_code == 200:
+                content_type = response.headers.get("content-type", "").lower()
+                # HTML 응답이면 바이러스 스캔 페이지일 수 있음
+                if "text/html" in content_type:
+                    print("Detected HTML response (possibly virus scan warning), extracting download link...")
+                    # HTML에서 실제 다운로드 링크 추출 시도
+                    import re
+                    html_content = response.text
+                    # "downloadUrl" 또는 "uc-download-link" 찾기
+                    download_pattern = r'href="(/uc\?export=download[^"]+)"'
+                    matches = re.findall(download_pattern, html_content)
+                    if matches:
+                        actual_download_url = "https://drive.google.com" + matches[0]
+                        print(f"Found actual download URL in HTML: {actual_download_url}")
+                        # confirm 파라미터 추가
+                        if "confirm=" not in actual_download_url:
+                            actual_download_url += "&confirm=t"
+                        response = client.get(actual_download_url, follow_redirects=True)
+            
+            if response.status_code == 200:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 파일 유효성 검사: Excel 파일은 ZIP 형식이어야 함
+                content = response.content
+                # ZIP 파일 시그니처 확인 (PK\x03\x04)
+                is_zip = content[:2] == b'PK'
+                
+                if not is_zip:
+                    # HTML 에러 페이지일 가능성
+                    content_text = content[:500].decode('utf-8', errors='ignore')
+                    print(f"ERROR: Downloaded file is not a valid Excel file (ZIP signature not found)")
+                    print(f"File content preview (first 500 chars): {content_text}")
                     return False
+                
+                with open(output_path, "wb") as f:
+                    f.write(content)
+                
+                # 파일 크기 확인
+                file_size = output_path.stat().st_size
+                print(f"Successfully downloaded file to {output_path} (size: {file_size} bytes)")
+                
+                if file_size < 1000:  # 1KB 미만이면 의심스러움
+                    print(f"WARNING: Downloaded file is very small ({file_size} bytes), might be an error page")
+                    # 파일 내용 확인
+                    with open(output_path, "rb") as f:
+                        preview = f.read(100).decode('utf-8', errors='ignore')
+                        if "<html" in preview.lower() or "<!doctype" in preview.lower():
+                            print("ERROR: Downloaded file appears to be HTML, not Excel")
+                            return False
+                
+                return True
+            else:
+                print(f"Failed to download file. Status code: {response.status_code}")
+                print(f"Response headers: {dict(response.headers)}")
+                # 응답 본문 일부 읽기 (에러 메시지 확인용)
+                try:
+                    error_text = response.text[:500] if hasattr(response, 'text') else "N/A"
+                    print(f"Error response: {error_text}")
+                except:
+                    pass
+                return False
     except Exception as e:
         print(f"Error downloading from OneDrive/SharePoint: {e}")
         print(traceback.format_exc())

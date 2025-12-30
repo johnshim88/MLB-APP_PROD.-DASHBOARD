@@ -755,6 +755,31 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     excel_path = ensure_excel_file_v2()
     print(f"DEBUG: load_summary_v2 - 사용할 파일 경로: {excel_path}")
     print(f"DEBUG: load_summary_v2 - 파일 존재 여부: {excel_path.exists()}")
+    
+    if not excel_path.exists():
+        raise FileNotFoundError(f"V2 Excel file not found: {excel_path}")
+    
+    # 파일 유효성 검사 (ZIP 시그니처 확인)
+    try:
+        with open(excel_path, "rb") as f:
+            file_header = f.read(4)
+            if file_header[:2] != b'PK':
+                # HTML 에러 페이지일 가능성
+                f.seek(0)
+                preview = f.read(500).decode('utf-8', errors='ignore')
+                error_msg = (
+                    f"V2 파일이 유효한 Excel 파일이 아닙니다. "
+                    f"다운로드된 파일이 HTML 에러 페이지일 수 있습니다. "
+                    f"파일 크기: {excel_path.stat().st_size} bytes"
+                )
+                print(f"ERROR: {error_msg}")
+                print(f"File preview: {preview[:200]}")
+                raise ValueError(error_msg)
+    except ValueError:
+        raise
+    except Exception as e:
+        print(f"Warning: Could not validate file format: {e}")
+    
     print(f"DEBUG: load_summary_v2 - 대상 시트: {target_sheet}")
     
     workbook = None
