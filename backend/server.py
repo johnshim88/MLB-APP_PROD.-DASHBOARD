@@ -428,13 +428,23 @@ def ensure_excel_file_v2() -> Path:
         print(f"ONEDRIVE_SHARE_LINK_V2 환경 변수가 설정되지 않았습니다.")
     
     # V2 파일이 필수이므로 에러 발생
-    raise FileNotFoundError(
-        f"Excel file V2 not found. V2 file is required. Tried:\n"
-        f"  - {FILE_PATH_V2}\n"
-        f"  - {parent_file_path}\n"
-        f"ONEDRIVE_SHARE_LINK_V2: {'설정됨' if ONEDRIVE_SHARE_LINK_V2 else '설정되지 않음'}\n"
-        f"Please ensure the file exists in one of these locations."
-    )
+    error_details = [
+        f"Excel file V2 not found. V2 file is required.",
+        f"",
+        f"Checked locations:",
+        f"  1. {FILE_PATH_V2}",
+        f"  2. {parent_file_path}",
+        f"",
+        f"Environment variables:",
+        f"  - ONEDRIVE_SHARE_LINK_V2: {'SET (check logs for download status)' if ONEDRIVE_SHARE_LINK_V2 else 'NOT SET'}",
+        f"  - SUMMARY_EXCEL_V2: {EXCEL_FILENAME_V2}",
+        f"",
+        f"Please ensure:",
+        f"  1. ONEDRIVE_SHARE_LINK_V2 environment variable is set in Render",
+        f"  2. The file can be downloaded from OneDrive/Google Drive",
+        f"  3. Check Render logs for download errors"
+    ]
+    raise FileNotFoundError("\n".join(error_details))
 
 
 def should_update_cache() -> bool:
@@ -1234,9 +1244,15 @@ def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
             media_type="application/json",
             headers=headers
         )
+    except FileNotFoundError as fnf_exc:
+        # V2 파일이 없는 경우 명확한 에러 메시지
+        error_detail = f"V2 Excel file not found. Please check Render environment variables (ONEDRIVE_SHARE_LINK_V2) and logs."
+        print(f"FileNotFoundError in /api/v2/quantity: {fnf_exc}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=404, detail=error_detail) from fnf_exc
     except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
-        print(f"Unexpected error in /api/quantity: {error_detail}")
+        print(f"Unexpected error in /api/v2/quantity: {error_detail}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=error_detail) from exc
 
@@ -1282,9 +1298,15 @@ def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
             media_type="application/json",
             headers=headers
         )
+    except FileNotFoundError as fnf_exc:
+        # V2 파일이 없는 경우 명확한 에러 메시지
+        error_detail = f"V2 Excel file not found. Please check Render environment variables (ONEDRIVE_SHARE_LINK_V2) and logs."
+        print(f"FileNotFoundError in /api/v2/style-count: {fnf_exc}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=404, detail=error_detail) from fnf_exc
     except Exception as exc:
         error_detail = f"Unexpected error: {str(exc)}"
-        print(f"Unexpected error in /api/style-count: {error_detail}")
+        print(f"Unexpected error in /api/v2/style-count: {error_detail}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=error_detail) from exc
 
@@ -1486,6 +1508,21 @@ async def startup_event():
         print(f"[서버 시작] 환경 변수에서 비밀번호를 사용합니다. (길이: {len(password_set)})")
     else:
         print(f"[서버 시작] 기본 비밀번호 사용: MLB123")
+    
+    # V2 파일 확인 (서버 시작 시점에 체크, 없어도 서버는 시작)
+    try:
+        if ONEDRIVE_SHARE_LINK_V2:
+            print(f"[서버 시작] V2 파일 확인 중...")
+            ensure_excel_file_v2()
+            print(f"[서버 시작] V2 파일 확인 완료")
+        else:
+            print(f"[서버 시작] 경고: ONEDRIVE_SHARE_LINK_V2 환경 변수가 설정되지 않았습니다.")
+            if FILE_PATH_V2.exists():
+                print(f"[서버 시작] 로컬에 V2 파일이 있습니다: {FILE_PATH_V2}")
+            else:
+                print(f"[서버 시작] 경고: V2 파일을 찾을 수 없습니다: {FILE_PATH_V2}")
+    except Exception as e:
+        print(f"[서버 시작] 경고: V2 파일을 확인할 수 없습니다 (서버는 계속 시작됩니다): {e}")
     
     # 초기 캐시 업데이트 (캐시가 없으면)
     if _data_cache is None:
