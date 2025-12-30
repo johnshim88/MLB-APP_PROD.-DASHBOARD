@@ -427,14 +427,9 @@ def ensure_excel_file_v2() -> Path:
     else:
         print(f"ONEDRIVE_SHARE_LINK_V2 환경 변수가 설정되지 않았습니다.")
     
-    # V2 파일이 없으면 V1 파일을 대체로 사용 (하위 호환성)
-    if FILE_PATH.exists():
-        print(f"Warning: V2 파일을 찾을 수 없어 V1 파일을 사용합니다: {FILE_PATH}")
-        return FILE_PATH
-    
-    # 파일이 여전히 없으면 에러
+    # V2 파일이 필수이므로 에러 발생
     raise FileNotFoundError(
-        f"Excel file V2 not found. Tried:\n"
+        f"Excel file V2 not found. V2 file is required. Tried:\n"
         f"  - {FILE_PATH_V2}\n"
         f"  - {parent_file_path}\n"
         f"ONEDRIVE_SHARE_LINK_V2: {'설정됨' if ONEDRIVE_SHARE_LINK_V2 else '설정되지 않음'}\n"
@@ -620,15 +615,11 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
     try:
         data = load_summary_v2(sheet_name)
         
-        # 데이터 유효성 검사
+        # 데이터 유효성 검사 - V2 데이터가 비어있으면 에러
         if not data or len(data.get("nations", [])) == 0:
-            print(f"Warning: V2 데이터가 비어있습니다. V1 데이터를 시도합니다...")
-            # V1 데이터로 폴백
-            try:
-                data = load_summary(sheet_name)
-                print(f"V1 데이터 로드 성공 (폴백)")
-            except Exception as e2:
-                print(f"V1 데이터 로드도 실패: {e2}")
+            error_msg = f"V2 데이터가 비어있습니다. V2 파일이 올바르게 로드되었는지 확인하세요. (sheet_name={sheet_name})"
+            print(f"Error: {error_msg}")
+            raise ValueError(error_msg)
         
         # 캐시 업데이트 (파일이 변경되었거나 캐시가 없는 경우)
         if file_changed or _data_cache_v2 is None:
@@ -644,49 +635,18 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
                 _data_cache_v2["style_count"] = data
             _cache_timestamp_v2 = datetime.now()
         
-        # 최종 데이터 유효성 검사
-        if not data or len(data.get("nations", [])) == 0:
-            print(f"Error: 최종 데이터가 비어있습니다. 빈 구조를 반환합니다.")
-            return {
-                "nations": [],
-                "items": [],
-                "categories": [],
-                "sub_categories": [],
-                "week_info": {
-                    "current_week": DEFAULT_WEEK1,
-                    "next_week": DEFAULT_WEEK2,
-                },
-                "sheet_name": sheet_name,
-            }
-        
         return data
+    except ValueError as ve:
+        # 데이터 유효성 검사 실패 - 에러 재발생
+        raise
     except Exception as e:
         print(f"V2 데이터 로드 오류: {e}")
         import traceback
         traceback.print_exc()
         
-        # V1 데이터로 폴백 시도
-        try:
-            print(f"V1 데이터로 폴백 시도 중...")
-            data = load_summary(sheet_name)
-            if data and len(data.get("nations", [])) > 0:
-                print(f"V1 데이터 로드 성공 (폴백)")
-                return data
-        except Exception as e2:
-            print(f"V1 데이터 로드도 실패: {e2}")
-        
-        # 최소한의 구조라도 반환하여 프론트엔드 에러 방지
-        return {
-            "nations": [],
-            "items": [],
-            "categories": [],
-            "sub_categories": [],
-            "week_info": {
-                "current_week": DEFAULT_WEEK1,
-                "next_week": DEFAULT_WEEK2,
-            },
-            "sheet_name": sheet_name,
-        }
+        # V2 파일이 필수이므로 에러 발생 (V1 폴백 제거)
+        error_msg = f"V2 데이터를 로드할 수 없습니다: {str(e)}. V2 파일이 올바르게 설정되어 있는지 확인하세요."
+        raise RuntimeError(error_msg) from e
 
 
 def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
@@ -777,11 +737,19 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     
     # V2 파일 존재 확인 및 동기화
     excel_path = ensure_excel_file_v2()
+    print(f"DEBUG: load_summary_v2 - 사용할 파일 경로: {excel_path}")
+    print(f"DEBUG: load_summary_v2 - 파일 존재 여부: {excel_path.exists()}")
+    print(f"DEBUG: load_summary_v2 - 대상 시트: {target_sheet}")
     
     workbook = None
     try:
         # read_only=True로 메모리 사용량 최소화
+        # data_only=False로 변경하여 수식도 읽을 수 있도록 함 (수식이 계산되지 않은 경우 대비)
+        print(f"DEBUG: 엑셀 파일 열기 시도 중...")
+        # data_only=True로 먼저 시도 (계산된 값 읽기)
+        # 만약 값이 모두 None이면 data_only=False로 재시도
         workbook = openpyxl.load_workbook(excel_path, data_only=True, read_only=True, keep_links=False)
+        print(f"DEBUG: 엑셀 파일 열기 성공. 사용 가능한 시트: {workbook.sheetnames}")
     except PermissionError as exc:
         error_msg = (
             f"엑셀 파일 V2에 접근할 수 없습니다. 파일이 다른 프로그램에서 열려있거나 "
@@ -793,13 +761,16 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
 
     try:
         available_sheets = workbook.sheetnames
+        print(f"DEBUG: 사용 가능한 시트 목록: {available_sheets}")
         
         if target_sheet not in available_sheets:
+            print(f"ERROR: 시트 '{target_sheet}'를 찾을 수 없습니다. 사용 가능한 시트: {', '.join(available_sheets)}")
             raise RuntimeError(
                 f"Worksheet '{target_sheet}' not found in V2 file. Available sheets: {', '.join(available_sheets)}"
             )
         
         sheet = workbook[target_sheet]
+        print(f"DEBUG: 시트 '{target_sheet}' 로드 성공. 시트 크기: {sheet.max_row}행 x {sheet.max_column}열")
         
     except KeyError as exc:
         if workbook:
@@ -809,14 +780,18 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     try:
         # 헤더에서 주차 정보 추출
         WEEK1, WEEK2 = _find_week_numbers(sheet)
+        print(f"DEBUG: 추출된 주차 정보 - 금주: {WEEK1}, 차주: {WEEK2}")
         
         # 주차 정보에 따라 동적으로 컬럼 생성
         VALUE_COLUMNS = _build_value_columns(WEEK1, WEEK2, "C", "D")
         DETAIL_VALUE_COLUMNS = _build_value_columns(WEEK1, WEEK2, "P", "Q")
+        print(f"DEBUG: VALUE_COLUMNS: {VALUE_COLUMNS}")
+        print(f"DEBUG: DETAIL_VALUE_COLUMNS: {DETAIL_VALUE_COLUMNS}")
         
         data = {}
         for name, config in BLOCK_LAYOUT:
             try:
+                print(f"DEBUG: 데이터 블록 추출 시작 - {name}")
                 current_config = config.copy()
                 if config.get("use_detail_columns"):
                     current_config["value_columns"] = DETAIL_VALUE_COLUMNS
@@ -824,6 +799,9 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
                     current_config["value_columns"] = VALUE_COLUMNS
                 
                 extracted = _extract_block(sheet, current_config)
+                print(f"DEBUG: {name} 추출 완료 - {len(extracted)}개 항목")
+                if len(extracted) > 0:
+                    print(f"DEBUG: {name} 샘플 데이터 (첫 항목): {extracted[0]}")
                 
                 # 국가별/아이템별에 누적값 추가 (F열=누적 목표, G열=누적 실제)
                 # 차주 데이터도 추가 (M열=차주 목표, N열=차주 실적)
@@ -845,28 +823,42 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
                                 # F열 = 누적 목표 (금주)
                                 cum_target_col = "F"
                                 cum_target = sheet[f"{cum_target_col}{row_num}"].value
+                                print(f"DEBUG: {name} 행 {row_num} - {cum_target_col}열 값: {cum_target} (타입: {type(cum_target)})")
                                 if cum_target is not None:
-                                    row_data["target_cumulative"] = cum_target if isinstance(cum_target, (int, float)) else 0
+                                    row_data["target_cumulative"] = float(cum_target) if isinstance(cum_target, (int, float)) else 0
+                                else:
+                                    row_data["target_cumulative"] = 0
                                 
                                 # G열 = 누적 실제 (금주)
                                 cum_actual_col = "G"
                                 cum_actual = sheet[f"{cum_actual_col}{row_num}"].value
+                                print(f"DEBUG: {name} 행 {row_num} - {cum_actual_col}열 값: {cum_actual} (타입: {type(cum_actual)})")
                                 if cum_actual is not None:
-                                    row_data["actual_cumulative"] = cum_actual if isinstance(cum_actual, (int, float)) else 0
+                                    row_data["actual_cumulative"] = float(cum_actual) if isinstance(cum_actual, (int, float)) else 0
+                                else:
+                                    row_data["actual_cumulative"] = 0
                                 
                                 # M열 = 차주 목표
                                 next_target_col = "M"
                                 next_target = sheet[f"{next_target_col}{row_num}"].value
                                 if next_target is not None:
-                                    row_data["target_next"] = next_target if isinstance(next_target, (int, float)) else 0
+                                    row_data["target_next"] = float(next_target) if isinstance(next_target, (int, float)) else 0
+                                else:
+                                    row_data["target_next"] = 0
                                 
                                 # N열 = 차주 실적
                                 next_actual_col = "N"
                                 next_actual = sheet[f"{next_actual_col}{row_num}"].value
                                 if next_actual is not None:
-                                    row_data["actual_next"] = next_actual if isinstance(next_actual, (int, float)) else 0
+                                    row_data["actual_next"] = float(next_actual) if isinstance(next_actual, (int, float)) else 0
+                                else:
+                                    row_data["actual_next"] = 0
+                                
+                                print(f"DEBUG: {name} 행 {row_num} 최종 데이터: target_cumulative={row_data.get('target_cumulative')}, actual_cumulative={row_data.get('actual_cumulative')}")
                             except Exception as e:
                                 print(f"Warning: Could not extract cumulative values for {name} row {row_num}: {e}")
+                                import traceback
+                                traceback.print_exc()
                 
                 # 세부 복종별: S열을 직접 읽어서 모든 항목을 순서대로 추출
                 if name == "sub_categories":
@@ -968,20 +960,46 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
         summary_cells = {}
         try:
             # 금주 데이터
-            summary_cells["D18"] = sheet["D18"].value if sheet["D18"].value is not None else 0  # 금주 출고 목표 수량
-            summary_cells["E18"] = sheet["E18"].value if sheet["E18"].value is not None else 0  # 금주 출고 완료 수량
-            summary_cells["F18"] = sheet["F18"].value if sheet["F18"].value is not None else 0  # 금주 출고 목표 수량 (누적)
-            summary_cells["G18"] = sheet["G18"].value if sheet["G18"].value is not None else 0  # 금주 출고 완료 수량 (누적)
+            d18_val = sheet["D18"].value
+            e18_val = sheet["E18"].value
+            f18_val = sheet["F18"].value
+            g18_val = sheet["G18"].value
+            
+            summary_cells["D18"] = float(d18_val) if d18_val is not None and isinstance(d18_val, (int, float)) else 0
+            summary_cells["E18"] = float(e18_val) if e18_val is not None and isinstance(e18_val, (int, float)) else 0
+            summary_cells["F18"] = float(f18_val) if f18_val is not None and isinstance(f18_val, (int, float)) else 0
+            summary_cells["G18"] = float(g18_val) if g18_val is not None and isinstance(g18_val, (int, float)) else 0
             
             # 차주 데이터
-            summary_cells["K18"] = sheet["K18"].value if sheet["K18"].value is not None else 0  # 차주 출고 목표 수량
-            summary_cells["L18"] = sheet["L18"].value if sheet["L18"].value is not None else 0  # 차주 출고 완료 수량
-            summary_cells["M18"] = sheet["M18"].value if sheet["M18"].value is not None else 0  # 차주 출고 목표 수량 (누적)
-            summary_cells["N18"] = sheet["N18"].value if sheet["N18"].value is not None else 0  # 차주 출고 완료 수량 (누적)
-            summary_cells["O18"] = sheet["O18"].value if sheet["O18"].value is not None else 0  # 차주 출고 목표 수량 (누적) - 다른 시트?
-            summary_cells["P18"] = sheet["P18"].value if sheet["P18"].value is not None else 0  # 차주 출고 완료 수량 (누적) - 다른 시트?
+            k18_val = sheet["K18"].value
+            l18_val = sheet["L18"].value
+            m18_val = sheet["M18"].value
+            n18_val = sheet["N18"].value
+            o18_val = sheet["O18"].value
+            p18_val = sheet["P18"].value
+            
+            summary_cells["K18"] = float(k18_val) if k18_val is not None and isinstance(k18_val, (int, float)) else 0
+            summary_cells["L18"] = float(l18_val) if l18_val is not None and isinstance(l18_val, (int, float)) else 0
+            summary_cells["M18"] = float(m18_val) if m18_val is not None and isinstance(m18_val, (int, float)) else 0
+            summary_cells["N18"] = float(n18_val) if n18_val is not None and isinstance(n18_val, (int, float)) else 0
+            summary_cells["O18"] = float(o18_val) if o18_val is not None and isinstance(o18_val, (int, float)) else 0
+            summary_cells["P18"] = float(p18_val) if p18_val is not None and isinstance(p18_val, (int, float)) else 0
+            
+            # 디버깅: 읽은 값 출력
+            print(f"DEBUG: Summary cells 읽기 결과:")
+            print(f"  D18 (금주 목표): {d18_val} -> {summary_cells['D18']}")
+            print(f"  E18 (금주 완료): {e18_val} -> {summary_cells['E18']}")
+            print(f"  F18 (금주 목표 누적): {f18_val} -> {summary_cells['F18']}")
+            print(f"  G18 (금주 완료 누적): {g18_val} -> {summary_cells['G18']}")
+            print(f"  K18 (차주 목표): {k18_val} -> {summary_cells['K18']}")
+            print(f"  L18 (차주 완료): {l18_val} -> {summary_cells['L18']}")
+            print(f"  M18 (차주 목표 누적): {m18_val} -> {summary_cells['M18']}")
+            print(f"  N18 (차주 완료 누적): {n18_val} -> {summary_cells['N18']}")
+            
         except Exception as e:
             print(f"Warning: Could not extract summary cells: {e}")
+            import traceback
+            traceback.print_exc()
             summary_cells = {
                 "D18": 0, "E18": 0, "F18": 0, "G18": 0,
                 "K18": 0, "L18": 0, "M18": 0, "N18": 0, "O18": 0, "P18": 0
@@ -1091,6 +1109,14 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
             "suppliers": suppliers_data,  # 협력사 데이터
         }
         
+        # 최종 데이터 유효성 검사
+        print(f"DEBUG: 최종 데이터 요약:")
+        print(f"  - nations: {len(result.get('nations', []))}개")
+        print(f"  - items: {len(result.get('items', []))}개")
+        print(f"  - sub_categories: {len(result.get('sub_categories', []))}개")
+        print(f"  - suppliers: {len(result.get('suppliers', []))}개")
+        print(f"  - summary_cells 샘플: D18={summary_cells.get('D18')}, F18={summary_cells.get('F18')}, G18={summary_cells.get('G18')}")
+        
         return result
     except Exception as e:
         error_msg = f"Unexpected error in load_summary_v2: {str(e)}"
@@ -1176,21 +1202,23 @@ def get_quantity_summary(_: bool = Depends(verify_password)) -> Response:
 
 @app.get("/api/v2/quantity")
 def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
-    """수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
+    """V2 수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
-        data = get_cached_data("수량 기준")
+        print(f"DEBUG: /api/v2/quantity 엔드포인트 호출됨")
+        data = get_cached_data_v2("수량 기준")
+        print(f"DEBUG: /api/v2/quantity - 데이터 로드 완료. nations: {len(data.get('nations', []))}개, items: {len(data.get('items', []))}개")
         
-        # 캐시 타임스탬프 및 파일 수정 시간 추가
-        cache_timestamp = _cache_timestamp.isoformat() if _cache_timestamp else None
+        # 캐시 타임스탬프 및 파일 수정 시간 추가 (V2 버전)
+        cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
         file_mtime = None
-        if FILE_PATH.exists():
-            file_mtime = datetime.fromtimestamp(FILE_PATH.stat().st_mtime).isoformat()
+        if FILE_PATH_V2.exists():
+            file_mtime = datetime.fromtimestamp(FILE_PATH_V2.stat().st_mtime).isoformat()
         
         # 메타데이터 추가
         data["_meta"] = {
             "cache_timestamp": cache_timestamp,
             "file_modified_time": file_mtime,
-            "cache_age_seconds": (datetime.now() - _cache_timestamp).total_seconds() if _cache_timestamp else None,
+            "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
         }
         
         # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
@@ -1222,21 +1250,23 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Response:
 
 @app.get("/api/v2/style-count")
 def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
-    """스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
+    """V2 스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
-        data = get_cached_data("스타일수 기준")
+        print(f"DEBUG: /api/v2/style-count 엔드포인트 호출됨")
+        data = get_cached_data_v2("스타일수 기준")
+        print(f"DEBUG: /api/v2/style-count - 데이터 로드 완료. nations: {len(data.get('nations', []))}개, items: {len(data.get('items', []))}개")
         
-        # 캐시 타임스탬프 및 파일 수정 시간 추가
-        cache_timestamp = _cache_timestamp.isoformat() if _cache_timestamp else None
+        # 캐시 타임스탬프 및 파일 수정 시간 추가 (V2 버전)
+        cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
         file_mtime = None
-        if FILE_PATH.exists():
-            file_mtime = datetime.fromtimestamp(FILE_PATH.stat().st_mtime).isoformat()
+        if FILE_PATH_V2.exists():
+            file_mtime = datetime.fromtimestamp(FILE_PATH_V2.stat().st_mtime).isoformat()
         
         # 메타데이터 추가
         data["_meta"] = {
             "cache_timestamp": cache_timestamp,
             "file_modified_time": file_mtime,
-            "cache_age_seconds": (datetime.now() - _cache_timestamp).total_seconds() if _cache_timestamp else None,
+            "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
         }
         
         # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
@@ -1263,7 +1293,9 @@ def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
 def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
     """V2 수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
+        print(f"DEBUG: /api/v2/quantity 엔드포인트 호출됨")
         data = get_cached_data_v2("수량 기준")
+        print(f"DEBUG: /api/v2/quantity - 데이터 로드 완료. nations: {len(data.get('nations', []))}개, items: {len(data.get('items', []))}개")
         
         # 캐시 타임스탬프 및 파일 수정 시간 추가
         cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
