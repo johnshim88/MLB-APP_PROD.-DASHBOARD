@@ -13,12 +13,12 @@
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
-    <script src="config.js"></script>
     <script>
       // 로컬 개발 환경에서는 localhost 사용, 배포 시에는 환경 변수로 설정
       // config.js에서 설정된 값이 우선 적용됨
-      window.API_URL = window.API_URL || "http://localhost:8000";
+      window.API_URL = window.API_URL || "https://mlb-app-prod-dashboard.onrender.com";
     </script>
+    <script src="config.js"></script>
     <style>
       :root {
         color-scheme: light;
@@ -971,7 +971,7 @@
             currentProgress = currentProgressPct * progress;
             cumulativeProgress = cumulativeProgressPct * progress;
             targetCumulativeProgress = targetCumulativeProgressPct * progress;
-            currentWeekActualCumulativeProgress = currentWeekActualCumulativeProgressPct * progress;
+            currentWeekActualCumulativeProgress = currentWeekActualCumulativePct * progress;
             
             // 캔버스 클리어
             ctx.clearRect(0, 0, canvas.width, canvas.height);
