@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <title>26SS 생산 스케줄 대시보드 V2</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -12,8 +13,10 @@
     />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+    <script src="config.js"></script>
     <script>
       // 로컬 개발 환경에서는 localhost 사용, 배포 시에는 환경 변수로 설정
+      // config.js에서 설정된 값이 우선 적용됨
       window.API_URL = window.API_URL || "http://localhost:8000";
     </script>
     <style>
@@ -367,27 +370,27 @@
             <div class="kpi-label" id="kpi-total-label">26SS 총 오더 스타일 수</div>
             <div class="kpi-value" id="kpi-total">-</div>
           </div>
-          <!-- 2행: 금주 출고 목표/완료 수량 (누적) -->
+          <!-- 2행: 출고 목표/완료 수량 (누적) -->
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
             <div class="kpi-card">
-              <div class="kpi-label">금주 출고 목표 수량 (누적)</div>
+              <div class="kpi-label" id="kpi-label-target-cumulative">금주 출고 목표 수량 (누적)</div>
               <div class="kpi-value" id="kpi-target-cumulative">-</div>
               <div class="kpi-sub-value" id="kpi-target-cumulative-pct">-</div>
             </div>
-            <div class="kpi-card">
-              <div class="kpi-label">금주 출고 완료 수량 (누적)</div>
+            <div class="kpi-card highlight">
+              <div class="kpi-label" id="kpi-label-actual-cumulative">금주 출고 완료 수량 (누적)</div>
               <div class="kpi-value" id="kpi-actual-cumulative">-</div>
               <div class="kpi-sub-value" id="kpi-actual-cumulative-pct">-</div>
             </div>
           </div>
-          <!-- 3행: 금주 출고 목표/완료 수량 -->
+          <!-- 3행: 출고 목표/완료 수량 -->
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
             <div class="kpi-card">
-              <div class="kpi-label">금주 출고 목표 수량</div>
+              <div class="kpi-label" id="kpi-label-target">금주 출고 목표 수량</div>
               <div class="kpi-value" id="kpi-target">-</div>
             </div>
             <div class="kpi-card highlight">
-              <div class="kpi-label">금주 출고 완료 수량</div>
+              <div class="kpi-label" id="kpi-label-actual">금주 출고 완료 수량</div>
               <div class="kpi-value" id="kpi-actual">-</div>
             </div>
           </div>
@@ -422,7 +425,7 @@
           </div>
           <div class="card">
             <h2>협력사별 현황<span class="week-current"></span></h2>
-            <div class="chart-container">
+            <div class="chart-container-scrollable">
               <canvas id="chart-suppliers"></canvas>
             </div>
           </div>
@@ -469,6 +472,7 @@
           showLoading("엑셀 파일 다운로드 중...");
           const response = await fetch(`${API_BASE_URL}/api/v2/export/excel`, {
             headers: AUTH_HEADERS,
+            cache: 'no-cache',
           });
           
           if (!response.ok) {
@@ -500,15 +504,18 @@
 
       // 로그인 처리
       function handleLogin() {
+        console.log("로그인 버튼 클릭됨");
         const passwordInput = document.getElementById("password-input");
         const errorDiv = document.getElementById("login-error");
         const password = passwordInput.value;
 
         if (!password) {
+          console.log("비밀번호가 입력되지 않음");
           errorDiv.classList.add("show");
           return;
         }
 
+        console.log("로그인 시도:", API_BASE_URL);
         errorDiv.classList.remove("show");
         showLoading("인증 중...");
 
@@ -517,37 +524,58 @@
           "Authorization": `Basic ${encodedPassword}`
         };
 
-        fetch(`${API_BASE_URL}/api/sheets`, {
+        // 로그인 검증을 위해 /api/v2/quantity 엔드포인트 사용 (인증 필요)
+        console.log("API 호출:", `${API_BASE_URL}/api/v2/quantity`);
+        fetch(`${API_BASE_URL}/api/v2/quantity`, {
           headers: AUTH_HEADERS
         })
           .then(resp => {
+            console.log("응답 상태:", resp.status);
             if (resp.ok) {
+              console.log("로그인 성공");
               showLoading("정보 접근 중...");
               document.getElementById("login-overlay").classList.add("hidden");
               document.getElementById("dashboard-content").classList.remove("hidden");
               initDashboard();
             } else {
+              console.log("로그인 실패:", resp.status);
               hideLoading();
               errorDiv.classList.add("show");
               passwordInput.value = "";
             }
           })
           .catch(err => {
-            hideLoading();
             console.error("Fetch error:", err);
+            hideLoading();
             errorDiv.classList.add("show");
             passwordInput.value = "";
+            alert(`로그인 오류: ${err.message}\n\n서버가 실행 중인지 확인하세요.\nAPI URL: ${API_BASE_URL}`);
           });
       }
 
-      document.getElementById("login-button").addEventListener("click", handleLogin);
-      document.getElementById("password-input").addEventListener("keypress", (e) => {
-        if (e.key === "Enter") handleLogin();
-      });
-      document.getElementById("export-button").addEventListener("click", exportExcel);
-      
-      // 새로고침 버튼 이벤트
+      // DOM 로드 후 이벤트 리스너 등록
       document.addEventListener("DOMContentLoaded", () => {
+        // 로그인 버튼 이벤트
+        const loginButton = document.getElementById("login-button");
+        if (loginButton) {
+          loginButton.addEventListener("click", handleLogin);
+        }
+        
+        // 비밀번호 입력 필드 엔터 키 이벤트
+        const passwordInput = document.getElementById("password-input");
+        if (passwordInput) {
+          passwordInput.addEventListener("keypress", (e) => {
+            if (e.key === "Enter") handleLogin();
+          });
+        }
+        
+        // 내보내기 버튼 이벤트
+        const exportButton = document.getElementById("export-button");
+        if (exportButton) {
+          exportButton.addEventListener("click", exportExcel);
+        }
+        
+        // 새로고침 버튼 이벤트
         const refreshBtn = document.getElementById("refresh-btn");
         if (refreshBtn) {
           refreshBtn.addEventListener("click", async () => {
@@ -628,6 +656,9 @@
         const unitLabel = type === "quantity" ? "수량" : "스타일 수";
         document.getElementById("kpi-total-label").textContent = `26SS 총 오더 ${unitLabel}`;
         
+        // KPI 카드 라벨도 업데이트
+        updateWeekLabels();
+        
         cachedData = null;
         initDashboard();
       }
@@ -667,26 +698,72 @@
       }
 
       function updateWeekLabels() {
+        // 차주 선택 여부 확인
+        const isNextWeek = CURRENT_WEEK === NEXT_WEEK;
+        const weekLabel = isNextWeek ? "차주" : "금주";
+        
+        // 수량/스타일수 기준 확인
+        const unitLabel = CURRENT_TYPE === "quantity" ? "수량" : "스타일수";
+        
         document.querySelectorAll(".week-current").forEach((el) => {
           el.textContent = ` (${CURRENT_WEEK}주차)`;
         });
+        
+        // KPI 카드 라벨 업데이트
+        if (isNextWeek) {
+          document.getElementById("kpi-label-target-cumulative").textContent = `차주 출고 목표 ${unitLabel} (누적)`;
+          document.getElementById("kpi-label-actual-cumulative").textContent = `차주 출고 예상 ${unitLabel} (누적)`;
+          document.getElementById("kpi-label-target").textContent = `차주 출고 목표 ${unitLabel}`;
+          document.getElementById("kpi-label-actual").textContent = `차주 출고 예상 ${unitLabel}`;
+        } else {
+          document.getElementById("kpi-label-target-cumulative").textContent = `금주 출고 목표 ${unitLabel} (누적)`;
+          document.getElementById("kpi-label-actual-cumulative").textContent = `금주 출고 완료 ${unitLabel} (누적)`;
+          document.getElementById("kpi-label-target").textContent = `금주 출고 목표 ${unitLabel}`;
+          document.getElementById("kpi-label-actual").textContent = `금주 출고 완료 ${unitLabel}`;
+        }
       }
 
       const datasetLabelFormatter = (value, context) => {
-        const pctSeries = context.dataset.pctData;
-        const pctValue = pctSeries && pctSeries[context.dataIndex] != null
-          ? pct.format(pctSeries[context.dataIndex])
-          : null;
         const qty = fmt.format(value ?? 0);
-        return pctValue ? `${qty} (${pctValue})` : qty;
+        const datasetIndex = context.datasetIndex;
+        const dataIndex = context.dataIndex;
+        const chart = context.chart;
+        
+        // 실적 데이터셋(두 번째, 인덱스 1)인 경우 목표 진행률 계산
+        if (datasetIndex === 1 && chart.data.datasets[0]) {
+          const targetValue = chart.data.datasets[0].data[dataIndex] ?? 0;
+          if (targetValue > 0) {
+            const progressPct = (value / targetValue) * 100;
+            return `${qty} (${progressPct.toFixed(1)}%)`;
+          }
+        }
+        
+        return qty;
       };
 
-      const buildDataset = (rows, { key, pctKey, label, color }) => {
+      const buildDataset = (rows, { key, pctKey, label, color, isActual = false, targetKey = null }) => {
+        const data = rows.map((r) => r[key] ?? 0);
+        
+        // 실적 데이터셋이고 목표 키가 있으면 진행률에 따라 색상 설정
+        let backgroundColor = color;
+        if (isActual && targetKey) {
+          backgroundColor = data.map((actualValue, index) => {
+            const targetValue = rows[index]?.[targetKey] ?? 0;
+            if (targetValue > 0) {
+              const progressPct = (actualValue / targetValue) * 100;
+              if (progressPct <= 90) return '#FF6B6B';  // 90% 이하: 빨간색
+              if (progressPct >= 97) return '#00C49F';  // 97% 이상: 초록색
+              return '#3A86FF';  // 90% 초과 ~ 97% 미만: 파란색
+            }
+            return '#3A86FF';
+          });
+        }
+        
         const dataset = {
           label,
-          data: rows.map((r) => r[key] ?? 0),
+          data: data,
           pctData: pctKey ? rows.map((r) => r[pctKey] ?? null) : null,
-          backgroundColor: color,
+          backgroundColor: backgroundColor,
           borderRadius: 10,
           barThickness: 18,
           maxBarThickness: 28,
@@ -710,6 +787,8 @@
       async function loadData() {
         try {
           const headers = {...AUTH_HEADERS};
+          // ETag 기반 조건부 요청 (속도 최적화)
+          // 브라우저 HTTP 캐시는 사용하지 않지만, ETag로 304 응답 받으면 메모리 캐시 사용
           if (cachedData && cachedData._etag) {
             headers['If-None-Match'] = cachedData._etag;
           }
@@ -717,7 +796,8 @@
           console.log("데이터 로드 시도:", DATA_URL);
           const resp = await fetch(DATA_URL, {
             headers: headers,
-            cache: 'default'
+            cache: 'no-cache',  // 브라우저 HTTP 캐시는 저장하지 않지만, 조건부 요청은 가능
+            method: 'GET'
           });
           
           if (!resp.ok) {
@@ -728,21 +808,26 @@
               document.getElementById("dashboard-content").classList.add("hidden");
               throw new Error("인증이 만료되었습니다. 다시 로그인해주세요.");
             }
-            if (resp.status === 304) {
-              return cachedData;
-            }
             throw new Error(`데이터를 불러올 수 없습니다. (${resp.status}: ${errorText.substring(0, 100)})`);
           }
           
+          // 304 Not Modified: 데이터가 변경되지 않았으면 메모리 캐시 사용 (매우 빠름)
+          if (resp.status === 304) {
+            console.log("데이터 변경 없음 (304), 메모리 캐시 사용");
+            return cachedData;
+          }
+          
+          // 200 OK: 새로운 데이터 받기
           const data = await resp.json();
           console.log("데이터 로드 성공:", Object.keys(data));
-          console.log("데이터 상세 - nations:", data.nations?.slice(0, 3));
-          console.log("데이터 상세 - items:", data.items?.slice(0, 3));
           console.log("데이터 상세 - week_info:", data.week_info);
+          
+          // ETag 저장 (다음 요청에서 조건부 요청에 사용)
           const etag = resp.headers.get('ETag');
           if (etag && data) {
             data._etag = etag;
           }
+          
           return data;
         } catch (error) {
           console.error("데이터 로드 오류:", error);
@@ -769,36 +854,95 @@
           return;
         }
         
+        // 차주 선택 여부 확인
+        const isNextWeek = CURRENT_WEEK === NEXT_WEEK;
+        
         // 1행: 26SS 총 오더 스타일 수 (기존 데이터 그대로)
         const totalQty = totalRow.total_qty ?? 0;
         document.getElementById("kpi-total").textContent = fmt.format(totalQty);
         
-        // summary_cells에서 값 가져오기 (E18, F18, G18)
-        const e18 = summaryCells?.E18 ?? 0;
-        const f18 = summaryCells?.F18 ?? 0;
-        const g18 = summaryCells?.G18 ?? 0;
+        let targetCumulative, actualCumulative, target, actual;
         
-        // 2행: 금주 출고 목표 수량 (누적) = F18, 금주 출고 완료 수량 (누적) = G18
-        document.getElementById("kpi-target-cumulative").textContent = fmt.format(f18);
-        document.getElementById("kpi-actual-cumulative").textContent = fmt.format(g18);
+        if (isNextWeek) {
+          // 차주 데이터 사용
+          // M18, O18: 차주 출고 목표 수량 (누적)
+          // N18, P18: 차주 출고 완료 수량 (누적)
+          targetCumulative = (summaryCells?.M18 ?? 0) || (summaryCells?.O18 ?? 0);
+          actualCumulative = (summaryCells?.N18 ?? 0) || (summaryCells?.P18 ?? 0);
+          // K18: 차주 출고 목표 수량
+          // L18: 차주 출고 완료 수량
+          target = summaryCells?.K18 ?? 0;
+          actual = summaryCells?.L18 ?? 0;
+        } else {
+          // 금주 데이터 사용
+          targetCumulative = summaryCells?.F18 ?? 0;
+          actualCumulative = summaryCells?.G18 ?? 0;
+          target = summaryCells?.D18 ?? 0;
+          actual = summaryCells?.E18 ?? 0;
+        }
+        
+        // 2행: 출고 목표 수량 (누적), 출고 완료 수량 (누적)
+        document.getElementById("kpi-target-cumulative").textContent = fmt.format(targetCumulative);
+        document.getElementById("kpi-actual-cumulative").textContent = fmt.format(actualCumulative);
         
         // 퍼센트 계산 (총 수량 기준)
-        const targetCumulativePct = totalQty && totalQty > 0 ? f18 / totalQty : 0;
-        const actualCumulativePct = totalQty && totalQty > 0 ? g18 / totalQty : 0;
+        const targetCumulativePct = totalQty && totalQty > 0 ? targetCumulative / totalQty : 0;
+        const actualCumulativePct = totalQty && totalQty > 0 ? actualCumulative / totalQty : 0;
         document.getElementById("kpi-target-cumulative-pct").textContent = pct.format(targetCumulativePct);
         document.getElementById("kpi-actual-cumulative-pct").textContent = pct.format(actualCumulativePct);
         
-        // 3행: 금주 출고 목표 수량 = E18, 금주 출고 완료 수량 = E18 (사용자 요청대로)
-        document.getElementById("kpi-target").textContent = fmt.format(e18);
-        document.getElementById("kpi-actual").textContent = fmt.format(e18);
+        // 3행: 출고 목표 수량, 출고 완료 수량
+        document.getElementById("kpi-target").textContent = fmt.format(target);
+        document.getElementById("kpi-actual").textContent = fmt.format(actual);
       }
 
-      // 원 그래프 렌더링 (출고 완료 수량과 진행률만 표시) - 커스텀 원형 진행률 표시기
+      // 원 그래프 렌더링 (출고 완료 + 누적 완료 수량 표시)
       function renderDonut(totalRow, summaryCells) {
         const target = totalRow?.total_qty ?? 0;
-        // V2: E18 값을 출고 완료 수량으로 사용
-        const actualCurrent = summaryCells?.E18 ?? totalRow?.[`actual_${CURRENT_WEEK}`] ?? 0;
-        const progressPct = Math.min(target && target > 0 ? actualCurrent / target : 0, 1);
+        
+        // 차주 선택 여부 확인
+        const isNextWeek = CURRENT_WEEK === NEXT_WEEK;
+        
+        let actualCurrent, actualCumulative, targetCumulative;
+        let currentWeekActualCumulative = 0; // 차주 탭에서 금주 완료 데이터를 표시하기 위해
+        let currentWeekTargetCumulative = 0; // 차주 탭에서 금주 목표 데이터 (금주 완료 부분 색상 계산용)
+        
+        if (isNextWeek) {
+          // 차주 데이터 사용
+          // L18: 차주 출고 완료 수량 - 찐한 색
+          actualCurrent = summaryCells?.L18 ?? 0;
+          // N18, P18: 차주 출고 완료 수량 (누적) - 연한 색, 가운데 표시
+          actualCumulative = (summaryCells?.N18 ?? 0) || (summaryCells?.P18 ?? 0);
+          // M18, O18: 차주 출고 목표 수량 (누적) - 흰색으로 추가 표시
+          targetCumulative = (summaryCells?.M18 ?? 0) || (summaryCells?.O18 ?? 0);
+          // G18: 금주 출고 완료 수량 (누적) - 차주 탭에서 먼저 표시
+          currentWeekActualCumulative = summaryCells?.G18 ?? 0;
+          // F18: 금주 출고 목표 수량 (누적) - 금주 완료 부분 색상 계산용
+          currentWeekTargetCumulative = summaryCells?.F18 ?? 0;
+        } else {
+          // 금주 데이터 사용
+          // E18: 금주 출고 완료 수량 - 찐한 색
+          actualCurrent = summaryCells?.E18 ?? 0;
+          // G18: 누적 완료 수량 - 연한 색, 가운데 표시
+          actualCumulative = summaryCells?.G18 ?? 0;
+          // F18: 금주 출고 목표 수량 (누적) - 흰색으로 추가 표시
+          targetCumulative = summaryCells?.F18 ?? 0;
+        }
+        
+        const currentProgressPct = Math.min(target && target > 0 ? actualCurrent / target : 0, 1);
+        const cumulativeProgressPct = Math.min(target && target > 0 ? actualCumulative / target : 0, 1);
+        const targetCumulativeProgressPct = Math.min(target && target > 0 ? targetCumulative / target : 0, 1);
+        const currentWeekActualCumulativePct = Math.min(target && target > 0 ? currentWeekActualCumulative / target : 0, 1);
+        
+        // 목표 진행률 계산 (실적 / 목표 × 100)
+        // 차주 탭: 차주 예상에 대한 목표 진행률 (중앙 표시용)
+        // 금주 탭: 금주 완료에 대한 목표 진행률 (중앙 표시 및 색상용)
+        const targetProgressPct = targetCumulative > 0 ? (actualCumulative / targetCumulative) * 100 : 0;
+        // 차주 탭: 금주 완료에 대한 목표 진행률 (금주 완료 부분 색상용)
+        // 금주 탭에서는 사용하지 않음 (targetProgressPct 사용)
+        const currentWeekTargetProgressPct = isNextWeek && currentWeekTargetCumulative > 0 
+          ? (currentWeekActualCumulative / currentWeekTargetCumulative) * 100 
+          : (isNextWeek ? 0 : targetProgressPct);
 
         destroyChart("totalProgress");
         const canvas = document.getElementById("totalProgress");
@@ -809,74 +953,261 @@
         const ctx = canvas.getContext('2d');
         const centerX = canvas.width / 2;
         const centerY = canvas.height / 2;
-        const radius = Math.min(canvas.width, canvas.height) * 0.35; // 반지름
-        const lineWidth = 30; // 링 두께
+        const outerRadius = Math.min(canvas.width, canvas.height) * 0.35; // 바깥쪽 반지름 (누적)
+        const innerRadius = outerRadius - 25; // 안쪽 반지름 (금주)
+        const lineWidth = 20; // 링 두께
         
-        // 애니메이션을 위한 진행률
-        let currentProgress = 0;
-        const targetProgress = progressPct;
-        const animationDuration = 1000;
-        const startTime = Date.now();
-        
-        function animate() {
-          const elapsed = Date.now() - startTime;
-          const progress = Math.min(elapsed / animationDuration, 1);
-          currentProgress = targetProgress * progress;
+          // 애니메이션을 위한 진행률
+          let currentProgress = 0;
+          let cumulativeProgress = 0;
+          let targetCumulativeProgress = 0;
+          let currentWeekActualCumulativeProgress = 0;
+          const animationDuration = 1000;
+          const startTime = Date.now();
           
-          // 캔버스 클리어
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          function animate() {
+            const elapsed = Date.now() - startTime;
+            const progress = Math.min(elapsed / animationDuration, 1);
+            currentProgress = currentProgressPct * progress;
+            cumulativeProgress = cumulativeProgressPct * progress;
+            targetCumulativeProgress = targetCumulativeProgressPct * progress;
+            currentWeekActualCumulativeProgress = currentWeekActualCumulativePct * progress;
+            
+            // 캔버스 클리어
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 바깥쪽 링: 차주 탭인 경우 금주 완료 데이터 먼저 그리기
+            if (isNextWeek && currentWeekActualCumulativeProgress > 0) {
+              // 목표 진행률에 따라 색상 결정
+              let currentWeekColor;
+              if (currentWeekTargetProgressPct <= 90) {
+                currentWeekColor = '#FF6B6B'; // 90% 이하: 빨간색
+              } else if (currentWeekTargetProgressPct >= 97) {
+                currentWeekColor = '#00C49F'; // 97% 이상: 초록색
+              } else {
+                currentWeekColor = '#3A86FF'; // 기본: 파란색
+              }
+              
+              ctx.beginPath();
+              ctx.arc(centerX, centerY, outerRadius, -Math.PI / 2, -Math.PI / 2 + currentWeekActualCumulativeProgress * 2 * Math.PI);
+              ctx.strokeStyle = currentWeekColor;
+              ctx.lineWidth = lineWidth;
+              ctx.lineCap = 'round';
+              ctx.stroke();
+            }
+            
+            // 바깥쪽 링: 누적 완료 수량 - 금주 탭이거나 차주 탭의 경우 차주 예상 부분
+            if (isNextWeek) {
+              // 차주 탭: 차주 예상 부분을 #E9ECEF로 그리기 (금주 완료 이후부터)
+              if (cumulativeProgress > currentWeekActualCumulativeProgress) {
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, outerRadius, 
+                  -Math.PI / 2 + currentWeekActualCumulativeProgress * 2 * Math.PI,
+                  -Math.PI / 2 + cumulativeProgress * 2 * Math.PI);
+                ctx.strokeStyle = '#E9ECEF';
+                ctx.lineWidth = lineWidth;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+              }
+            } else {
+              // 금주 탭: 목표 진행률에 따라 색상 결정
+              let cumulativeColor;
+              if (targetProgressPct <= 90) {
+                cumulativeColor = '#FF6B6B'; // 90% 이하: 빨간색
+              } else if (targetProgressPct >= 97) {
+                cumulativeColor = '#00C49F'; // 97% 이상: 초록색
+              } else {
+                cumulativeColor = '#3A86FF'; // 기본: 파란색
+              }
+              
+              ctx.beginPath();
+              ctx.arc(centerX, centerY, outerRadius, -Math.PI / 2, -Math.PI / 2 + cumulativeProgress * 2 * Math.PI);
+              ctx.strokeStyle = cumulativeColor;
+              ctx.lineWidth = lineWidth;
+              ctx.lineCap = 'round';
+              ctx.stroke();
+            }
           
-          // 그라데이션 생성 (보라색-분홍색)
-          const gradient = ctx.createLinearGradient(
-            centerX - radius, centerY - radius,
-            centerX + radius, centerY + radius
+          // 바깥쪽 링: 누적 목표 수량 - 누적 완료 수량 위에 이어서 그리기 (투명 + 테두리)
+          // 목표가 누적 완료보다 클 경우에만 표시 (목표 - 완료 부분)
+          if (targetCumulativeProgress > cumulativeProgress) {
+            ctx.save();
+            ctx.strokeStyle = '#94a3b8'; // 회색 테두리
+            ctx.lineWidth = 2; // 얇은 테두리
+            ctx.lineCap = 'round';
+            
+            // 바깥쪽 테두리 (링의 바깥쪽 가장자리)
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, outerRadius + lineWidth / 2 - 1, 
+              -Math.PI / 2 + cumulativeProgress * 2 * Math.PI, 
+              -Math.PI / 2 + targetCumulativeProgress * 2 * Math.PI);
+            ctx.stroke();
+            
+            // 안쪽 테두리 (링의 안쪽 가장자리)
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, outerRadius - lineWidth / 2 + 1, 
+              -Math.PI / 2 + cumulativeProgress * 2 * Math.PI, 
+              -Math.PI / 2 + targetCumulativeProgress * 2 * Math.PI);
+            ctx.stroke();
+            
+            // 시작점 연결선 (완료 지점에서 목표 시작점까지)
+            const startAngle = -Math.PI / 2 + cumulativeProgress * 2 * Math.PI;
+            const startX1 = centerX + (outerRadius + lineWidth / 2 - 1) * Math.cos(startAngle);
+            const startY1 = centerY + (outerRadius + lineWidth / 2 - 1) * Math.sin(startAngle);
+            const startX2 = centerX + (outerRadius - lineWidth / 2 + 1) * Math.cos(startAngle);
+            const startY2 = centerY + (outerRadius - lineWidth / 2 + 1) * Math.sin(startAngle);
+            ctx.beginPath();
+            ctx.moveTo(startX1, startY1);
+            ctx.lineTo(startX2, startY2);
+            ctx.stroke();
+            
+            // 끝점 연결선 (목표 끝점)
+            const endAngle = -Math.PI / 2 + targetCumulativeProgress * 2 * Math.PI;
+            const endX1 = centerX + (outerRadius + lineWidth / 2 - 1) * Math.cos(endAngle);
+            const endY1 = centerY + (outerRadius + lineWidth / 2 - 1) * Math.sin(endAngle);
+            const endX2 = centerX + (outerRadius - lineWidth / 2 + 1) * Math.cos(endAngle);
+            const endY2 = centerY + (outerRadius - lineWidth / 2 + 1) * Math.sin(endAngle);
+            ctx.beginPath();
+            ctx.moveTo(endX1, endY1);
+            ctx.lineTo(endX2, endY2);
+            ctx.stroke();
+            
+            // 목표 끝점 원형 마커 (테두리만)
+            const targetEndX = centerX + outerRadius * Math.cos(endAngle);
+            const targetEndY = centerY + outerRadius * Math.sin(endAngle);
+            ctx.beginPath();
+            ctx.arc(targetEndX, targetEndY, lineWidth / 2, 0, 2 * Math.PI);
+            ctx.fillStyle = 'transparent';
+            ctx.fill();
+            ctx.strokeStyle = '#94a3b8';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+          }
+          
+          // 안쪽 링: 금주 출고 완료 수량 (찐한 색)
+          const currentGradient = ctx.createLinearGradient(
+            centerX - innerRadius, centerY - innerRadius,
+            centerX + innerRadius, centerY + innerRadius
           );
-          gradient.addColorStop(0, '#a78bfa'); // 보라색
-          gradient.addColorStop(0.5, '#c084fc');
-          gradient.addColorStop(1, '#f472b6'); // 분홍색
+          currentGradient.addColorStop(0, '#7dd3fc'); // 찐한 파란색
+          currentGradient.addColorStop(0.5, '#60c5f8');
+          currentGradient.addColorStop(1, '#3b82f6'); // 더 찐한 파란색
           
-          // 원형 진행률 링 그리기
           ctx.beginPath();
-          ctx.arc(centerX, centerY, radius, -Math.PI / 2, -Math.PI / 2 + currentProgress * 2 * Math.PI);
-          ctx.strokeStyle = gradient;
+          ctx.arc(centerX, centerY, innerRadius, -Math.PI / 2, -Math.PI / 2 + currentProgress * 2 * Math.PI);
+          ctx.strokeStyle = currentGradient;
           ctx.lineWidth = lineWidth;
           ctx.lineCap = 'round';
           ctx.stroke();
           
-          // 시작점 원형 마커
+          // 시작점 원형 마커 (바깥쪽)
           ctx.beginPath();
-          ctx.arc(centerX, centerY - radius, lineWidth / 2, 0, 2 * Math.PI);
-          ctx.fillStyle = gradient;
+          ctx.arc(centerX, centerY - outerRadius, lineWidth / 2, 0, 2 * Math.PI);
+          if (isNextWeek && currentWeekActualCumulativeProgress > 0) {
+            // 목표 진행률에 따라 색상 결정
+            let currentWeekColor;
+            if (currentWeekTargetProgressPct <= 90) {
+              currentWeekColor = '#FF6B6B';
+            } else if (currentWeekTargetProgressPct >= 97) {
+              currentWeekColor = '#00C49F';
+            } else {
+              currentWeekColor = '#3A86FF';
+            }
+            ctx.fillStyle = currentWeekColor;
+          } else {
+            // 금주 탭: 목표 진행률에 따라 색상 결정
+            let cumulativeColor;
+            if (targetProgressPct <= 90) {
+              cumulativeColor = '#FF6B6B';
+            } else if (targetProgressPct >= 97) {
+              cumulativeColor = '#00C49F';
+            } else {
+              cumulativeColor = '#3A86FF';
+            }
+            ctx.fillStyle = cumulativeColor;
+          }
           ctx.fill();
           
-          // 끝점 원형 마커 (진행률에 따라)
-          if (currentProgress > 0) {
-            const endAngle = -Math.PI / 2 + currentProgress * 2 * Math.PI;
-            const endX = centerX + radius * Math.cos(endAngle);
-            const endY = centerY + radius * Math.sin(endAngle);
+          // 끝점 원형 마커 (금주 완료 - 차주 탭일 경우)
+          if (isNextWeek && currentWeekActualCumulativeProgress > 0) {
+            const endAngle = -Math.PI / 2 + currentWeekActualCumulativeProgress * 2 * Math.PI;
+            const endX = centerX + outerRadius * Math.cos(endAngle);
+            const endY = centerY + outerRadius * Math.sin(endAngle);
             ctx.beginPath();
             ctx.arc(endX, endY, lineWidth / 2, 0, 2 * Math.PI);
-            ctx.fillStyle = gradient;
+            let currentWeekColor;
+            if (currentWeekTargetProgressPct <= 90) {
+              currentWeekColor = '#FF6B6B';
+            } else if (currentWeekTargetProgressPct >= 97) {
+              currentWeekColor = '#00C49F';
+            } else {
+              currentWeekColor = '#3A86FF';
+            }
+            ctx.fillStyle = currentWeekColor;
             ctx.fill();
           }
           
-          // 중앙 텍스트
+          // 끝점 원형 마커 (누적 완료 - 차주 탭이면 차주 예상, 금주 탭이면 누적 완료)
+          if (cumulativeProgress > 0) {
+            const endAngle = -Math.PI / 2 + cumulativeProgress * 2 * Math.PI;
+            const endX = centerX + outerRadius * Math.cos(endAngle);
+            const endY = centerY + outerRadius * Math.sin(endAngle);
+            ctx.beginPath();
+            ctx.arc(endX, endY, lineWidth / 2, 0, 2 * Math.PI);
+            if (isNextWeek && cumulativeProgress > currentWeekActualCumulativeProgress) {
+              ctx.fillStyle = '#E9ECEF'; // 차주 예상 부분
+            } else {
+              // 금주 탭: 목표 진행률에 따라 색상 결정
+              let cumulativeColor;
+              if (targetProgressPct <= 90) {
+                cumulativeColor = '#FF6B6B';
+              } else if (targetProgressPct >= 97) {
+                cumulativeColor = '#00C49F';
+              } else {
+                cumulativeColor = '#3A86FF';
+              }
+              ctx.fillStyle = cumulativeColor;
+            }
+            ctx.fill();
+          }
+          
+          // 끝점 원형 마커 (금주)
+          if (currentProgress > 0) {
+            const endAngle = -Math.PI / 2 + currentProgress * 2 * Math.PI;
+            const endX = centerX + innerRadius * Math.cos(endAngle);
+            const endY = centerY + innerRadius * Math.sin(endAngle);
+            ctx.beginPath();
+            ctx.arc(endX, endY, lineWidth / 2, 0, 2 * Math.PI);
+            ctx.fillStyle = currentGradient;
+            ctx.fill();
+          }
+          
+          // 중앙 텍스트 (누적수량 표시)
           ctx.save();
           
-          // 출고 완료 수량 (큰 숫자, 위쪽)
+          // 누적 완료 수량 (큰 숫자, 위쪽)
           ctx.font = 'bold 36px Pretendard';
           ctx.fillStyle = '#1f2933';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(fmt.format(actualCurrent), centerX, centerY - 25);
+          ctx.fillText(fmt.format(actualCumulative), centerX, centerY - 30);
           
-          // 진행률% (그라데이션, 아래쪽)
+          // 진행률% (그라데이션, 중간)
           ctx.font = 'bold 32px Pretendard';
-          const textGradient = ctx.createLinearGradient(centerX - 60, centerY + 10, centerX + 60, centerY + 10);
-          textGradient.addColorStop(0, '#ef4444'); // 빨간색
-          textGradient.addColorStop(1, '#a855f7'); // 보라색
+          const textGradient = ctx.createLinearGradient(centerX - 60, centerY + 5, centerX + 60, centerY + 5);
+          textGradient.addColorStop(0, '#3b82f6'); // 파란색
+          textGradient.addColorStop(1, '#60c5f8'); // 연한 파란색
           ctx.fillStyle = textGradient;
-          ctx.fillText(pct.format(currentProgress), centerX, centerY + 25);
+          ctx.fillText(pct.format(cumulativeProgress), centerX, centerY + 15);
+          
+          // 목표 진행률 (괄호, 아래쪽)
+          ctx.font = '600 24px Pretendard';
+          ctx.fillStyle = '#5f6b7c';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const targetProgressText = `(목표 대비 진행률: ${targetProgressPct.toFixed(1)}%)`;
+          ctx.fillText(targetProgressText, centerX, centerY + 45);
           
           ctx.restore();
           
@@ -914,11 +1245,17 @@
             scales: {
               x: {
                 beginAtZero: true,
-                ticks: { callback: (value) => fmt.format(value) },
+                ticks: { 
+                  callback: (value) => fmt.format(value),
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
+                },
                 grid: { drawBorder: false },
               },
               y: {
-                ticks: { autoSkip: false },
+                ticks: { 
+                  autoSkip: false,
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
+                },
                 grid: { display: false },
               },
             },
@@ -926,7 +1263,10 @@
             plugins: {
               legend: {
                 position: "bottom",
-                labels: { usePointStyle: true },
+                labels: { 
+                  usePointStyle: true,
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
+                },
               },
               datalabels: {
                 anchor: "end",
@@ -934,6 +1274,7 @@
                 color: "#1f2933",
                 clip: false,
                 formatter: datasetLabelFormatter,
+                font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
               },
             },
           },
@@ -959,29 +1300,28 @@
         console.log("renderNations - CURRENT_WEEK:", CURRENT_WEEK);
         
         const labels = data.map((row) => row.code || row.country || "-");
-        const { target, actual, targetPct, actualPct } = getWeekKeys(CURRENT_WEEK);
         
-        console.log("renderNations - 사용할 키:", { target, actual, targetPct, actualPct });
+        // 차주 선택 여부 확인
+        const isNextWeek = CURRENT_WEEK === NEXT_WEEK;
+        const weekLabel = isNextWeek ? "차주" : "금주";
         
-        // 데이터 샘플 확인
-        if (data.length > 0) {
-          console.log("renderNations - 첫 번째 데이터 샘플:", data[0]);
-          console.log("renderNations - 첫 번째 데이터의 target 값:", data[0][target]);
-          console.log("renderNations - 첫 번째 데이터의 actual 값:", data[0][actual]);
-        }
-
+        // 차주이면 target_next, actual_next 사용, 아니면 target_cumulative, actual_cumulative 사용
+        const targetKey = isNextWeek ? "target_next" : "target_cumulative";
+        const actualKey = isNextWeek ? "actual_next" : "actual_cumulative";
         const datasets = [
           buildDataset(data, {
-            key: target,
-            pctKey: targetPct,
-            label: `${CURRENT_WEEK}주 목표`,
-            color: palette.target,
+            key: targetKey,
+            pctKey: null,
+            label: `${CURRENT_WEEK}주 목표 (누적)`,
+            color: "#E9ECEF",
           }),
           buildDataset(data, {
-            key: actual,
-            pctKey: actualPct,
-            label: `${CURRENT_WEEK}주 실적`,
-            color: palette.actual,
+            key: actualKey,
+            pctKey: null,
+            label: `${CURRENT_WEEK}주 실적 (누적)`,
+            color: "#3A86FF",
+            isActual: true,
+            targetKey: targetKey,
           }),
         ];
         
@@ -991,20 +1331,27 @@
 
       function renderItems(rows) {
         const labels = rows.map((row) => row.item || "-");
-        const { target, actual, targetPct, actualPct } = getWeekKeys(CURRENT_WEEK);
-
+        
+        // 차주 선택 여부 확인
+        const isNextWeek = CURRENT_WEEK === NEXT_WEEK;
+        
+        // 차주이면 target_next, actual_next 사용, 아니면 target_cumulative, actual_cumulative 사용
+        const targetKey = isNextWeek ? "target_next" : "target_cumulative";
+        const actualKey = isNextWeek ? "actual_next" : "actual_cumulative";
         const datasets = [
           buildDataset(rows, {
-            key: target,
-            pctKey: targetPct,
-            label: `${CURRENT_WEEK}주 목표`,
-            color: palette.target,
+            key: targetKey,
+            pctKey: null,
+            label: `${CURRENT_WEEK}주 목표 (누적)`,
+            color: "#E9ECEF",
           }),
           buildDataset(rows, {
-            key: actual,
-            pctKey: actualPct,
-            label: `${CURRENT_WEEK}주 실적`,
-            color: palette.actual,
+            key: actualKey,
+            pctKey: null,
+            label: `${CURRENT_WEEK}주 실적 (누적)`,
+            color: "#3A86FF",
+            isActual: true,
+            targetKey: targetKey,
           }),
         ];
         renderHorizontalChart("chart-items", labels, datasets);
@@ -1014,13 +1361,30 @@
         destroyChart("chart-subcategories");
         const canvas = document.getElementById("chart-subcategories");
         const container = canvas.parentElement;
-        canvas.width = container.clientWidth;
+        // 컨테이너 너비에 맞춰 canvas 너비 설정
+        const containerWidth = container.clientWidth || container.offsetWidth || 800;
+        canvas.width = containerWidth;
         
-        // TOTAL 제거
+        // TOTAL 제거 및 빈 항목 제거
         const filteredRows = rows.filter((row) => {
-          const subcat = (row.subcategory || "").toUpperCase();
-          return subcat !== "TOTAL" && subcat !== "";
+          // index를 기준으로 필터링 (S열 값)
+          const index = String(row.index || "").trim().toUpperCase();
+          // subcategory도 체크 (TOTAL 제거)
+          const subcat = String(row.subcategory || "").toUpperCase();
+          
+          // index가 없거나 TOTAL이면 제외
+          if (!index || index === "" || index === "TOTAL") {
+            return false;
+          }
+          if (subcat === "TOTAL") {
+            return false;
+          }
+          
+          return true;
         });
+        
+        console.log("세부 복종별 필터링 후 항목 수:", filteredRows.length);
+        console.log("세부 복종별 항목 목록:", filteredRows.map(r => r.index));
         
         if (!filteredRows.length) {
           charts["chart-subcategories"] = new Chart(
@@ -1037,29 +1401,55 @@
           return;
         }
 
-        const labels = filteredRows.map((row) => row.subcategory || "-");
-        const { target, actual, targetPct, actualPct } = getWeekKeys(CURRENT_WEEK);
+        // S열(인덱스)를 라벨로 사용, W열(누적 목표), X열(누적 수량) 사용
+        const labels = filteredRows.map((row) => {
+          const index = row.index ?? row.subcategory ?? "-";
+          return String(index);
+        });
 
-        const itemHeight = 35;  // 겹침 방지를 위해 높이 증가
-        const minHeight = 400;
-        const calculatedHeight = Math.max(minHeight, filteredRows.length * itemHeight + 100);
-        canvas.height = calculatedHeight;
+        // 전체 항목 높이로 차트를 그리고, 컨테이너는 스크롤로 5개만 보이게
+        const itemHeight = 60;  // 각 항목 높이 (간격 확대)
+        const totalHeight = Math.max(400, filteredRows.length * itemHeight + 150);  // 전체 항목 높이 (최소 400px)
+        
+        // 차트 생성 전에 canvas 크기 명시적으로 설정
+        canvas.height = totalHeight;
+        canvas.style.height = totalHeight + 'px';
+        canvas.style.width = '100%';
+        canvas.style.display = 'block';  // 인라인 요소로 인한 여백 제거
 
+        // 차주 선택 여부 확인
+        const isNextWeek = CURRENT_WEEK === NEXT_WEEK;
+        
+        const targetData = filteredRows.map((r) => isNextWeek ? (r.target_next ?? 0) : (r.target_cumulative ?? 0));
+        const actualData = filteredRows.map((r) => isNextWeek ? (r.actual_next ?? 0) : (r.actual_cumulative ?? 0));
+        
+        // 진행률에 따라 실적 색상 설정
+        const actualColors = actualData.map((actualValue, index) => {
+          const targetValue = targetData[index] ?? 0;
+          if (targetValue > 0) {
+            const progressPct = (actualValue / targetValue) * 100;
+            if (progressPct <= 90) return '#FF6B6B';  // 90% 이하: 빨간색
+            if (progressPct >= 97) return '#00C49F';  // 97% 이상: 초록색
+            return '#3A86FF';  // 90% 초과 ~ 97% 미만: 파란색
+          }
+          return '#3A86FF';
+        });
+        
         const datasets = [
           {
-            label: `${CURRENT_WEEK}주 목표`,
-            data: filteredRows.map((r) => r[target] ?? 0),
-            pctData: filteredRows.map((r) => r[targetPct] ?? null),
-            backgroundColor: palette.target,
+            label: `${CURRENT_WEEK}주 목표 (누적)`,
+            data: targetData,
+            pctData: null,
+            backgroundColor: "#E9ECEF",
             borderRadius: 8,
             barThickness: 22,
             maxBarThickness: 25,
           },
           {
-            label: `${CURRENT_WEEK}주 실적`,
-            data: filteredRows.map((r) => r[actual] ?? 0),
-            pctData: filteredRows.map((r) => r[actualPct] ?? null),
-            backgroundColor: palette.actual,
+            label: `${CURRENT_WEEK}주 실적 (누적)`,
+            data: actualData,
+            pctData: null,
+            backgroundColor: actualColors,
             borderRadius: 8,
             barThickness: 22,
             maxBarThickness: 25,
@@ -1071,8 +1461,9 @@
           data: { labels, datasets },
           options: {
             indexAxis: "y",
-            responsive: true,
+            responsive: false,  // 컨테이너 크기에 맞추지 않고 canvas 크기 그대로 사용
             maintainAspectRatio: false,
+            devicePixelRatio: 1,  // 고해상도 디스플레이 대응
             layout: { 
               padding: { 
                 top: 10, 
@@ -1086,47 +1477,112 @@
                 beginAtZero: true,
                 ticks: { 
                   callback: (value) => fmt.format(value),
-                  font: { size: 11 }
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
                 },
                 grid: { drawBorder: false },
               },
               y: {
                 ticks: { 
                   autoSkip: false,
-                  font: { size: 11 }
+                  stepSize: 1,  // 모든 항목 표시
+                  callback: function(value, index) {
+                    // 모든 라벨 표시
+                    return labels[index] || '';
+                  },
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
                 },
                 grid: { display: false },
+                afterBuildTicks: function(scale) {
+                  // 모든 항목에 대한 틱 생성 (강제)
+                  const ticks = [];
+                  for (let i = 0; i < labels.length; i++) {
+                    ticks.push({
+                      value: i,
+                      label: labels[i] || ''
+                    });
+                  }
+                  scale.ticks = ticks;
+                },
+                afterSetDimensions: function(scale) {
+                  // 차트 높이를 모든 항목이 들어갈 수 있도록 설정
+                  const itemHeight = 60;
+                  const calculatedHeight = labels.length * itemHeight;
+                  scale.height = calculatedHeight;
+                  scale.maxHeight = calculatedHeight;
+                },
+                afterFit: function(scale) {
+                  // 차트가 그려진 후에도 높이 유지
+                  const itemHeight = 60;
+                  const calculatedHeight = labels.length * itemHeight;
+                  if (scale.height < calculatedHeight) {
+                    scale.height = calculatedHeight;
+                  }
+                },
+                categoryPercentage: 0.7,  // 카테고리 간 간격 (작을수록 간격이 큼)
+                barPercentage: 0.8  // 막대 간 간격 (작을수록 간격이 큼)
               },
             },
             interaction: { mode: "nearest", intersect: false, axis: "y" },
             plugins: {
               legend: {
                 position: "bottom",
-                labels: { usePointStyle: true },
+                labels: { 
+                  usePointStyle: true,
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
+                },
               },
               datalabels: {
                 anchor: "end",
                 align: "end",
                 color: "#1f2933",
                 clip: false,
-                font: {
-                  size: 10,
-                  weight: "bold"
-                },
                 formatter: datasetLabelFormatter,
+                font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
               },
             },
+            onResize: function(chart) {
+              // 차트 크기 변경 시에도 높이 유지
+              const itemHeight = 60;
+              const calculatedHeight = labels.length * itemHeight + 150;
+              if (chart.canvas.height < calculatedHeight) {
+                chart.canvas.height = calculatedHeight;
+                chart.canvas.style.height = calculatedHeight + 'px';
+                chart.resize();
+              }
+            }
           },
         });
+        
+        // 차트 생성 후 강제로 크기 재설정
+        setTimeout(() => {
+          const finalHeight = Math.max(400, filteredRows.length * 60 + 150);
+          if (canvas.height !== finalHeight) {
+            canvas.height = finalHeight;
+            canvas.style.height = finalHeight + 'px';
+            charts["chart-subcategories"].resize();
+          }
+        }, 100);
       }
 
       function renderSuppliers(suppliersData) {
         destroyChart("chart-suppliers");
         const canvas = document.getElementById("chart-suppliers");
         const container = canvas.parentElement;
-        canvas.width = container.clientWidth;
-        canvas.height = 400;
+        // 컨테이너 너비에 맞춰 canvas 너비 설정
+        const containerWidth = container.clientWidth || container.offsetWidth || 800;
+        canvas.width = containerWidth;
         
+        // 전체 항목 높이로 차트를 그리고, 컨테이너는 스크롤로 보이게
+        const itemHeight = 60;  // 세부 복종별과 동일한 높이
+        const totalHeight = suppliersData && suppliersData.length > 0 
+          ? suppliersData.length * itemHeight + 150
+          : 400;
+        canvas.height = totalHeight;
+        canvas.style.height = totalHeight + 'px';
+        canvas.style.width = '100%';
+        canvas.style.display = 'block';
+        
+        console.log("협력사 데이터:", suppliersData);
         if (!suppliersData || suppliersData.length === 0) {
           charts["chart-suppliers"] = new Chart(canvas, {
             type: "bar",
@@ -1176,32 +1632,64 @@
           return;
         }
         
-        const labels = suppliersData.map((s) => s.name || "-");
-        const values = suppliersData.map((s) => s.value ?? 0);
+        // AK열(인덱스)를 라벨로 사용, AO열(누적 목표), AP열(누적 실제) 사용
+        const labels = suppliersData.map((s) => {
+          const index = s.index ?? s.name ?? "-";
+          return String(index);
+        });
+        
+        // 차주 선택 여부 확인
+        const isNextWeek = CURRENT_WEEK === NEXT_WEEK;
+        
+        const targetData = suppliersData.map((s) => isNextWeek ? (s.target_next ?? 0) : (s.target_cumulative ?? 0));
+        const actualData = suppliersData.map((s) => isNextWeek ? (s.actual_next ?? 0) : (s.actual_cumulative ?? 0));
+        
+        // 진행률에 따라 실적 색상 설정
+        const actualColors = actualData.map((actualValue, index) => {
+          const targetValue = targetData[index] ?? 0;
+          if (targetValue > 0) {
+            const progressPct = (actualValue / targetValue) * 100;
+            if (progressPct <= 90) return '#FF6B6B';  // 90% 이하: 빨간색
+            if (progressPct >= 97) return '#00C49F';  // 97% 이상: 초록색
+            return '#3A86FF';  // 90% 초과 ~ 97% 미만: 파란색
+          }
+          return '#3A86FF';
+        });
         
         charts["chart-suppliers"] = new Chart(canvas, {
           type: "bar",
           data: {
             labels: labels,
-            datasets: [{
-              label: "협력사별 수량",
-              data: values,
-              backgroundColor: palette.actual,
-              borderRadius: 8,
-              barThickness: 25,
-              maxBarThickness: 30,
-            }]
+            datasets: [
+              {
+                label: `${CURRENT_WEEK}주 목표 (누적)`,
+                data: targetData,
+                backgroundColor: "#E9ECEF",
+                borderRadius: 8,
+                barThickness: 22,  // 세부 복종별과 동일한 두께
+                maxBarThickness: 25,
+              },
+              {
+                label: `${CURRENT_WEEK}주 실적 (누적)`,
+                data: actualData,
+                backgroundColor: actualColors,
+                borderRadius: 8,
+                barThickness: 22,  // 세부 복종별과 동일한 두께
+                maxBarThickness: 25,
+              }
+            ]
           },
           options: {
             indexAxis: "y",
-            responsive: true,
+            responsive: false,  // 컨테이너 크기에 맞추지 않고 canvas 크기 그대로 사용
             maintainAspectRatio: false,
+            devicePixelRatio: 1,  // 고해상도 디스플레이 대응
             layout: { 
               padding: { 
-                top: 10, 
-                bottom: 30, 
+                top: 15, 
+                bottom: 35, 
                 right: 80,
-                left: 10
+                left: 15
               } 
             },
             scales: {
@@ -1209,37 +1697,58 @@
                 beginAtZero: true,
                 ticks: { 
                   callback: (value) => fmt.format(value),
-                  font: { size: 11 }
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
                 },
                 grid: { drawBorder: false },
               },
               y: {
                 ticks: { 
                   autoSkip: false,
-                  font: { size: 11 }
+                  stepSize: 1,
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
                 },
                 grid: { display: false },
+                afterBuildTicks: function(scale) {
+                  // 모든 항목에 대한 틱 생성
+                  scale.ticks = labels.map((label, index) => ({
+                    value: index,
+                    label: label
+                  }));
+                },
+                categoryPercentage: 0.7,  // 카테고리 간 간격 (작을수록 간격이 큼)
+                barPercentage: 0.8  // 막대 간 간격 (작을수록 간격이 큼)
               },
             },
             interaction: { mode: "nearest", intersect: false, axis: "y" },
             plugins: {
               legend: {
-                display: false,
+                position: "bottom",
+                labels: { 
+                  usePointStyle: true,
+                  font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
+                },
               },
               datalabels: {
                 anchor: "end",
                 align: "end",
                 color: "#1f2933",
                 clip: false,
-                font: {
-                  size: 11,
-                  weight: "bold"
-                },
-                formatter: (value) => fmt.format(value),
+                formatter: datasetLabelFormatter,
+                font: { family: 'Pretendard, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif' }
               },
             },
           },
         });
+        
+        // 차트 생성 후 강제로 크기 재설정
+        setTimeout(() => {
+          const finalHeight = suppliersData.length * 60 + 150;
+          if (canvas.height !== finalHeight) {
+            canvas.height = finalHeight;
+            canvas.style.height = finalHeight + 'px';
+            charts["chart-suppliers"].resize();
+          }
+        }, 100);
       }
 
       function refreshDashboardWithCurrentData(data) {

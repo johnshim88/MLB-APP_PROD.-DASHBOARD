@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -61,6 +62,8 @@ def verify_password(credentials: HTTPBasicCredentials = Depends(security)) -> bo
     correct_password = DASHBOARD_PASSWORD
     is_correct = secrets.compare_digest(credentials.password, correct_password)
     if not is_correct:
+        # 디버깅: 잘못된 비밀번호 시도 로그 (보안상 실제 비밀번호는 출력하지 않음)
+        print(f"[인증 실패] 사용자명: {credentials.username}, 입력된 비밀번호 길이: {len(credentials.password) if credentials.password else 0}")
         raise HTTPException(
             status_code=401,
             detail="Invalid password",
@@ -74,14 +77,24 @@ def _extract_week_from_header(cell_value: Any) -> Optional[int]:
     if cell_value is None:
         return None
     
+    # 숫자만 있는 경우
+    if isinstance(cell_value, (int, float)):
+        week_num = int(cell_value)
+        if 1 <= week_num <= 60:  # 합리적인 주차 범위
+            return week_num
+        return None
+    
     # 문자열로 변환
     text = str(cell_value).strip()
     
-    # 'xx주차' 패턴 찾기 (예: "49주차", "49 주차" 등)
+    # 'xx주차' 패턴 찾기 (예: "1주차", "52주차" 등)
     match = re.search(r'(\d+)\s*주차', text)
     if match:
         try:
-            return int(match.group(1))
+            week_num = int(match.group(1))
+            if 1 <= week_num <= 60:  # 합리적인 주차 범위
+                return week_num
+            return None
         except (ValueError, AttributeError):
             return None
     
@@ -89,35 +102,53 @@ def _extract_week_from_header(cell_value: Any) -> Optional[int]:
 
 
 def _find_week_numbers(ws: Worksheet) -> Tuple[int, int]:
-    """엑셀 시트의 헤더 행에서 주차 번호를 찾습니다."""
-    week_numbers = []
+    """엑셀 시트의 헤더 행에서 주차 번호를 찾습니다.
     
-    # 헤더 행을 확인 (일반적으로 1-4행, 더 넓은 범위로 확장)
-    for row in range(1, 6):  # 1-5행까지 확인
-        # D열부터 L열까지 확인 (첫 번째 주차 그룹)
-        for col_letter in ["D", "E", "F", "G", "H", "I", "J", "K", "L"]:
-            try:
-                cell_value = ws[f"{col_letter}{row}"].value
-                week_num = _extract_week_from_header(cell_value)
-                if week_num is not None and week_num not in week_numbers:
-                    week_numbers.append(week_num)
-                    if len(week_numbers) >= 2:
-                        break
-            except Exception:
-                continue
-        if len(week_numbers) >= 2:
-            break
+    V2 엑셀 파일 구조:
+    - D3: "1주차 (금주)" - 실제 주차 번호 (예: 1주차)
+    - K3: "2주차 (차주)" - 실제 주차 번호 (예: 2주차)
+    """
+    week1 = None  # 금주 주차 번호
+    week2 = None  # 차주 주차 번호
     
-    # 주차를 찾았으면 정렬 (첫 번째가 금주, 두 번째가 차주)
-    if len(week_numbers) >= 2:
-        week_numbers.sort()
-        return tuple(week_numbers[:2])
-    elif len(week_numbers) == 1:
-        # 한 개만 찾았으면 차주는 +1
-        return (week_numbers[0], week_numbers[0] + 1)
+    # D3에서 금주 정보 직접 읽기
+    try:
+        d3_value = ws["D3"].value
+        if d3_value is not None:
+            week1 = _extract_week_from_header(d3_value)
+            if week1 is not None:
+                print(f"금주 정보 발견: D3 = '{d3_value}' -> 주차 {week1}")
+            else:
+                print(f"Warning: D3에서 주차 번호를 추출할 수 없습니다: '{d3_value}'")
+    except Exception as e:
+        print(f"Warning: D3 셀 읽기 오류: {e}")
+    
+    # K3에서 차주 정보 직접 읽기
+    try:
+        k3_value = ws["K3"].value
+        if k3_value is not None:
+            week2 = _extract_week_from_header(k3_value)
+            if week2 is not None:
+                print(f"차주 정보 발견: K3 = '{k3_value}' -> 주차 {week2}")
+            else:
+                print(f"Warning: K3에서 주차 번호를 추출할 수 없습니다: '{k3_value}'")
+    except Exception as e:
+        print(f"Warning: K3 셀 읽기 오류: {e}")
+    
+    # 최종 결과 결정
+    if week1 is not None and week2 is not None:
+        result = (week1, week2)
+        print(f"주차 정보 추출 완료: 금주={result[0]}, 차주={result[1]}")
+        return result
+    elif week1 is not None:
+        result = (week1, week1 + 1)
+        print(f"금주만 발견: 금주={result[0]}, 차주={result[1]} (자동 계산)")
+        return result
     else:
-        # 찾지 못했으면 기본값 사용
-        return (DEFAULT_WEEK1, DEFAULT_WEEK2)
+        # 찾지 못한 경우 기본값 사용
+        result = (DEFAULT_WEEK1, DEFAULT_WEEK2)
+        print(f"주차 정보를 찾지 못함. 기본값 사용: 금주={result[0]}, 차주={result[1]}")
+        return result
 
 
 def _col_num_to_letter(n: int) -> str:
@@ -182,8 +213,8 @@ _data_cache_v2: Optional[Dict[str, Any]] = None
 _cache_timestamp_v2: Optional[datetime] = None
 _cache_lock_v2 = threading.Lock()
 
-# 업데이트 시간 설정 (오전 11시)
-UPDATE_HOUR = 11
+# 업데이트 시간 설정 (새벽 2시)
+UPDATE_HOUR = 2
 UPDATE_MINUTE = 0
 
 BLOCK_LAYOUT = (
@@ -202,12 +233,12 @@ BLOCK_LAYOUT = (
     (
         "sub_categories",
         {
-            "rows": range(5, 60),
+            "rows": range(5, 100),  # 모든 항목 포함을 위해 범위 확대
             "label_key": "subcategory",
             "label_col": "O",
             "use_detail_columns": True,  # DETAIL_VALUE_COLUMNS 사용 플래그
             "stop_on_blank": True,
-            "blank_tolerance": 3,
+            "blank_tolerance": 10,  # 더 많은 빈 행 허용
         },
     ),
 )
@@ -372,15 +403,30 @@ def ensure_excel_file() -> Path:
 
 def ensure_excel_file_v2() -> Path:
     """V2 엑셀 파일이 존재하는지 확인하고, 필요시 OneDrive에서 동기화합니다."""
+    # 기본 경로에서 파일 확인
+    if FILE_PATH_V2.exists():
+        return FILE_PATH_V2
+    
+    # 상위 디렉토리에서도 찾기 (로컬 개발 환경 대응)
+    parent_dir = BASE_DIR.parent
+    parent_file_path = parent_dir / EXCEL_FILENAME_V2
+    if parent_file_path.exists():
+        print(f"V2 파일을 상위 디렉토리에서 찾았습니다: {parent_file_path}")
+        return parent_file_path
+    
     # OneDrive 링크가 설정되어 있고 파일이 없으면 동기화 시도
-    if ONEDRIVE_SHARE_LINK_V2 and not FILE_PATH_V2.exists():
+    if ONEDRIVE_SHARE_LINK_V2:
         sync_onedrive_file(ONEDRIVE_SHARE_LINK_V2, FILE_PATH_V2, sync_interval=SYNC_INTERVAL, force_download=False)
+        if FILE_PATH_V2.exists():
+            return FILE_PATH_V2
     
     # 파일이 여전히 없으면 에러
-    if not FILE_PATH_V2.exists():
-        raise FileNotFoundError(f"Excel file V2 not found at {FILE_PATH_V2}. OneDrive sync may have failed.")
-    
-    return FILE_PATH_V2
+    raise FileNotFoundError(
+        f"Excel file V2 not found. Tried:\n"
+        f"  - {FILE_PATH_V2}\n"
+        f"  - {parent_file_path}\n"
+        f"Please ensure the file exists in one of these locations."
+    )
 
 
 def should_update_cache() -> bool:
@@ -727,44 +773,258 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
                     current_config["value_columns"] = VALUE_COLUMNS
                 
                 extracted = _extract_block(sheet, current_config)
-                data[name] = extracted
+                
+                # 국가별/아이템별에 누적값 추가 (F열=누적 목표, G열=누적 실제)
+                # 차주 데이터도 추가 (M열=차주 목표, N열=차주 실적)
+                if name in ["nations", "items"]:
+                    for row_data in extracted:
+                        row_num = None
+                        # 행 번호 찾기 (label_col에서)
+                        label_col = config.get("label_col", "B")
+                        for row_idx in config.get("rows", []):
+                            try:
+                                if sheet[f"{label_col}{row_idx}"].value == row_data.get(config.get("label_key", "label")):
+                                    row_num = row_idx
+                                    break
+                            except:
+                                continue
+                        
+                        if row_num:
+                            try:
+                                # F열 = 누적 목표 (금주)
+                                cum_target_col = "F"
+                                cum_target = sheet[f"{cum_target_col}{row_num}"].value
+                                if cum_target is not None:
+                                    row_data["target_cumulative"] = cum_target if isinstance(cum_target, (int, float)) else 0
+                                
+                                # G열 = 누적 실제 (금주)
+                                cum_actual_col = "G"
+                                cum_actual = sheet[f"{cum_actual_col}{row_num}"].value
+                                if cum_actual is not None:
+                                    row_data["actual_cumulative"] = cum_actual if isinstance(cum_actual, (int, float)) else 0
+                                
+                                # M열 = 차주 목표
+                                next_target_col = "M"
+                                next_target = sheet[f"{next_target_col}{row_num}"].value
+                                if next_target is not None:
+                                    row_data["target_next"] = next_target if isinstance(next_target, (int, float)) else 0
+                                
+                                # N열 = 차주 실적
+                                next_actual_col = "N"
+                                next_actual = sheet[f"{next_actual_col}{row_num}"].value
+                                if next_actual is not None:
+                                    row_data["actual_next"] = next_actual if isinstance(next_actual, (int, float)) else 0
+                            except Exception as e:
+                                print(f"Warning: Could not extract cumulative values for {name} row {row_num}: {e}")
+                
+                # 세부 복종별: S열을 직접 읽어서 모든 항목을 순서대로 추출
+                if name == "sub_categories":
+                    # S열을 직접 읽어서 모든 항목 추출 (더 넓은 범위)
+                    sub_categories_data = []
+                    # 5행부터 150행까지 넓게 체크 (모든 항목 포함)
+                    start_row = 5
+                    end_row = 150
+                    seen_indices = set()  # 중복 제거를 위한 집합
+                    found_count = 0
+                    
+                    print(f"S열 읽기 시작: {start_row}행부터 {end_row}행까지")
+                    
+                    for row_idx in range(start_row, end_row + 1):
+                        try:
+                            # S열에서 인덱스 읽기
+                            s_cell = sheet[f"S{row_idx}"]
+                            s_val = s_cell.value
+                            
+                            # S열 값 처리
+                            index_val = None
+                            
+                            if s_val is None:
+                                # None이면 건너뛰기
+                                continue
+                            
+                            # 타입별 처리
+                            if isinstance(s_val, str):
+                                s_val_stripped = s_val.strip()
+                                if s_val_stripped and s_val_stripped.lower() != "none":
+                                    index_val = s_val_stripped
+                            elif isinstance(s_val, (int, float)):
+                                # 숫자인 경우 문자열로 변환
+                                index_val = str(int(s_val)) if s_val == int(s_val) else str(s_val)
+                            else:
+                                # 기타 타입은 문자열로 변환
+                                s_str = str(s_val).strip()
+                                if s_str and s_str.lower() != "none":
+                                    index_val = s_str
+                            
+                            # 유효한 인덱스 값이 없으면 건너뛰기
+                            if not index_val:
+                                continue
+                            
+                            # 중복 체크: 이미 본 인덱스면 건너뛰기
+                            if index_val in seen_indices:
+                                print(f"Warning: 중복된 인덱스 발견 (행 {row_idx}): {index_val} (건너뜀)")
+                                continue
+                            
+                            seen_indices.add(index_val)
+                            
+                            # W열에서 누적 목표 읽기 (금주)
+                            w_val = sheet[f"W{row_idx}"].value
+                            target_cumulative = w_val if w_val is not None and isinstance(w_val, (int, float)) else 0
+                            
+                            # X열에서 누적 실제 읽기 (금주)
+                            x_val = sheet[f"X{row_idx}"].value
+                            actual_cumulative = x_val if x_val is not None and isinstance(x_val, (int, float)) else 0
+                            
+                            # AD열에서 차주 목표 읽기
+                            ad_val = sheet[f"AD{row_idx}"].value
+                            target_next = ad_val if ad_val is not None and isinstance(ad_val, (int, float)) else 0
+                            
+                            # AE열에서 차주 실적 읽기
+                            ae_val = sheet[f"AE{row_idx}"].value
+                            actual_next = ae_val if ae_val is not None and isinstance(ae_val, (int, float)) else 0
+                            
+                            # O열에서 subcategory 읽기 (참고용)
+                            o_val = sheet[f"O{row_idx}"].value
+                            subcategory = str(o_val).strip() if o_val else ""
+                            
+                            # 데이터 추가
+                            sub_categories_data.append({
+                                "index": index_val,
+                                "subcategory": subcategory,
+                                "target_cumulative": target_cumulative,
+                                "actual_cumulative": actual_cumulative,
+                                "target_next": target_next,
+                                "actual_next": actual_next,
+                            })
+                            
+                            found_count += 1
+                            # 디버깅: 찾은 항목 로그 출력
+                            print(f"S열 항목 발견 (행 {row_idx}): {index_val} (목표: {target_cumulative}, 실적: {actual_cumulative})")
+                            
+                        except Exception as e:
+                            # 개별 행 오류는 무시하고 계속 진행
+                            print(f"Warning: 행 {row_idx} 처리 중 오류: {e}")
+                            continue
+                    
+                    print(f"세부 복종별 총 {found_count}개 항목 추출 완료: {[item['index'] for item in sub_categories_data]}")
+                    data[name] = sub_categories_data
+                else:
+                    data[name] = extracted
             except Exception as e:
                 data[name] = []
         
-        # V2 특화: E18, F18, G18 값 추출
+        # V2 특화: 금주 및 차주 summary_cells 값 추출
         summary_cells = {}
         try:
-            summary_cells["E18"] = sheet["E18"].value if sheet["E18"].value is not None else 0
-            summary_cells["F18"] = sheet["F18"].value if sheet["F18"].value is not None else 0
-            summary_cells["G18"] = sheet["G18"].value if sheet["G18"].value is not None else 0
+            # 금주 데이터
+            summary_cells["D18"] = sheet["D18"].value if sheet["D18"].value is not None else 0  # 금주 출고 목표 수량
+            summary_cells["E18"] = sheet["E18"].value if sheet["E18"].value is not None else 0  # 금주 출고 완료 수량
+            summary_cells["F18"] = sheet["F18"].value if sheet["F18"].value is not None else 0  # 금주 출고 목표 수량 (누적)
+            summary_cells["G18"] = sheet["G18"].value if sheet["G18"].value is not None else 0  # 금주 출고 완료 수량 (누적)
+            
+            # 차주 데이터
+            summary_cells["K18"] = sheet["K18"].value if sheet["K18"].value is not None else 0  # 차주 출고 목표 수량
+            summary_cells["L18"] = sheet["L18"].value if sheet["L18"].value is not None else 0  # 차주 출고 완료 수량
+            summary_cells["M18"] = sheet["M18"].value if sheet["M18"].value is not None else 0  # 차주 출고 목표 수량 (누적)
+            summary_cells["N18"] = sheet["N18"].value if sheet["N18"].value is not None else 0  # 차주 출고 완료 수량 (누적)
+            summary_cells["O18"] = sheet["O18"].value if sheet["O18"].value is not None else 0  # 차주 출고 목표 수량 (누적) - 다른 시트?
+            summary_cells["P18"] = sheet["P18"].value if sheet["P18"].value is not None else 0  # 차주 출고 완료 수량 (누적) - 다른 시트?
         except Exception as e:
-            print(f"Warning: Could not extract summary cells (E18, F18, G18): {e}")
-            summary_cells = {"E18": 0, "F18": 0, "G18": 0}
+            print(f"Warning: Could not extract summary cells: {e}")
+            summary_cells = {
+                "D18": 0, "E18": 0, "F18": 0, "G18": 0,
+                "K18": 0, "L18": 0, "M18": 0, "N18": 0, "O18": 0, "P18": 0
+            }
         
-        # V2 특화: 협력사 데이터 추출 (AJ~AY 열, 18행)
+        # V2 특화: 협력사 데이터 추출 (AK열=항목명, AO열=누적 목표, AP열=누적 실제)
+        # 협력사 데이터는 여러 행에 있을 수 있으므로 행을 순회
         suppliers_data = []
         try:
-            # AJ는 36번째 열, AY는 51번째 열
-            supplier_start_col = 36  # AJ
-            supplier_end_col = 51    # AY
-            supplier_row = 18
-            
-            # 열 라벨 찾기 (보통 5행 또는 4행에 있을 것으로 예상)
-            label_row = 5
-            for col_num in range(supplier_start_col, supplier_end_col + 1):
+            # 협력사 데이터가 있는 행 범위 확인 (보통 18행 근처, 더 넓은 범위로 확장)
+            # 14행에 (주)노브랜드_WOVEN이 있으므로 포함
+            for row_num in range(5, 50):  # 5행부터 50행까지 확인
                 try:
-                    col_letter = get_column_letter(col_num)
-                    label = sheet[f"{col_letter}{label_row}"].value
-                    value = sheet[f"{col_letter}{supplier_row}"].value if sheet[f"{col_letter}{supplier_row}"].value is not None else 0
+                    # AK열에서 항목명(인덱스) 읽기
+                    ak_val = sheet[f"AK{row_num}"].value
+                    if ak_val is None:
+                        continue
                     
-                    if label and str(label).strip():  # 라벨이 있는 경우만 추가
+                    # AK열 값 처리 (문자열, 숫자 모두 허용)
+                    if isinstance(ak_val, (int, float)):
+                        index_val = str(int(ak_val)) if ak_val == int(ak_val) else str(ak_val)
+                    else:
+                        index_val = str(ak_val).strip() if ak_val else ""
+                    
+                    if not index_val or index_val == "" or index_val.lower() == "none":
+                        continue
+                    
+                    # AO열에서 누적 목표 읽기 (금주)
+                    ao_val = sheet[f"AO{row_num}"].value
+                    target_cumulative = ao_val if ao_val is not None and isinstance(ao_val, (int, float)) else 0
+                    
+                    # AP열에서 누적 실제 읽기 (금주)
+                    ap_val = sheet[f"AP{row_num}"].value
+                    actual_cumulative = ap_val if ap_val is not None and isinstance(ap_val, (int, float)) else 0
+                    
+                    # AV열에서 차주 목표 읽기
+                    av_val = sheet[f"AV{row_num}"].value
+                    target_next = av_val if av_val is not None and isinstance(av_val, (int, float)) else 0
+                    
+                    # AW열에서 차주 실적 읽기
+                    aw_val = sheet[f"AW{row_num}"].value
+                    actual_next = aw_val if aw_val is not None and isinstance(aw_val, (int, float)) else 0
+                    
+                    # 데이터 추가 (항목명이 있고, 목표나 실적이 0이 아니거나 둘 다 0이어도 항목명만 있으면 추가)
+                    if index_val:
+                        # 14행에 있는 (주)노브랜드는 (주)노브랜드_WOVEN으로 변경
+                        # AK14의 값을 직접 확인하여 변경
+                        if row_num == 14:
+                            # AK14의 원본 값을 확인
+                            ak14_original = str(ak_val).strip() if ak_val else ""
+                            print(f"DEBUG: 협력사 14행 AK값 확인: '{ak14_original}' (원본 타입: {type(ak_val)})")
+                            # "(주)노브랜드"가 포함되어 있으면 변경
+                            if "(주)노브랜드" in ak14_original or "노브랜드" in ak14_original:
+                                index_val = "(주)노브랜드_WOVEN"
+                                print(f"협력사 14행 처리: '{ak14_original}' -> '{index_val}'")
+                        
                         suppliers_data.append({
-                            "name": str(label).strip(),
-                            "value": value
+                            "name": index_val,  # AK열 값이 항목명
+                            "index": index_val,  # 인덱스도 동일
+                            "target_cumulative": target_cumulative,
+                            "actual_cumulative": actual_cumulative,
+                            "target_next": target_next,
+                            "actual_next": actual_next,
+                            "value": actual_cumulative  # 기존 호환성을 위해 유지
                         })
                 except Exception as e:
-                    print(f"Warning: Could not extract supplier data from column {col_letter}: {e}")
+                    print(f"Warning: 협력사 데이터 추출 오류 (행 {row_num}): {e}")
                     continue
+            
+            print(f"협력사 데이터 추출 완료: {len(suppliers_data)}개 항목")
+            
+            # 중복 제거 및 정리 (주)노브랜드 처리 포함
+            seen = set()
+            unique_suppliers = []
+            노브랜드_count = 0
+            for supplier in suppliers_data:
+                supplier_name = supplier["name"]
+                supplier_index = supplier["index"]
+                
+                # (주)노브랜드 중복 처리
+                # 이미 14행은 WOVEN으로 처리되었으므로, 나머지 (주)노브랜드만 카운트
+                if "(주)노브랜드" in str(supplier_index) or "(주)노브랜드" in supplier_name:
+                    if "(주)노브랜드_WOVEN" not in str(supplier_index) and "(주)노브랜드_WOVEN" not in supplier_name:
+                        노브랜드_count += 1
+                        # 첫 번째 (주)노브랜드는 그대로, 두 번째부터는 WOVEN으로 변경
+                        # 하지만 14행은 이미 WOVEN으로 처리되었으므로 추가 처리 불필요
+                
+                # index를 기준으로 중복 체크
+                index_key = str(supplier_index) if supplier_index else supplier_name
+                if index_key not in seen:
+                    seen.add(index_key)
+                    unique_suppliers.append(supplier)
+            suppliers_data = unique_suppliers
+                
         except Exception as e:
             print(f"Warning: Could not extract suppliers data: {e}")
             suppliers_data = []
@@ -795,6 +1055,18 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
 @app.get("/health")
 def healthcheck() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/password-info")
+def get_password_info() -> Dict[str, Any]:
+    """비밀번호 설정 정보를 반환합니다 (디버깅용, 보안상 실제 비밀번호는 반환하지 않음)"""
+    password_set = os.getenv("DASHBOARD_PASSWORD")
+    return {
+        "password_source": "environment_variable" if password_set else "default",
+        "password_length": len(password_set) if password_set else len("MLB123"),
+        "is_default": password_set is None,
+        "hint": "MLB123 (기본값)" if password_set is None else "환경 변수에서 설정됨"
+    }
 
 
 @app.get("/api/cache-status")
@@ -846,6 +1118,13 @@ def list_sheets() -> Dict[str, Any]:
 
 @app.get("/api/quantity")
 def get_quantity_summary(_: bool = Depends(verify_password)) -> Response:
+    """V1 API - V2로 리다이렉트"""
+    # V2 엔드포인트로 리다이렉트
+    return get_quantity_summary_v2(_)
+
+
+@app.get("/api/v2/quantity")
+def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
     """수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
         data = get_cached_data("수량 기준")
@@ -885,6 +1164,13 @@ def get_quantity_summary(_: bool = Depends(verify_password)) -> Response:
 
 @app.get("/api/style-count")
 def get_style_count_summary(_: bool = Depends(verify_password)) -> Response:
+    """V1 API - V2로 리다이렉트"""
+    # V2 엔드포인트로 리다이렉트
+    return get_style_count_summary_v2(_)
+
+
+@app.get("/api/v2/style-count")
+def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
     """스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
         data = get_cached_data("스타일수 기준")
@@ -1002,30 +1288,8 @@ def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
 
 @app.post("/api/refresh")
 def refresh_cache(_: bool = Depends(verify_password)) -> Dict[str, Any]:
-    """캐시를 강제로 업데이트합니다. OneDrive에서 최신 파일을 가져와서 캐시를 갱신합니다."""
-    global _updating_cache
-    
-    try:
-        with _update_lock:
-            if _updating_cache:
-                return {"status": "already_updating", "message": "캐시 업데이트가 이미 진행 중입니다."}
-            
-            _updating_cache = True
-            try:
-                # 강제 동기화 및 캐시 업데이트
-                update_cache(force_sync=True)
-                return {
-                    "status": "success",
-                    "message": "캐시가 성공적으로 업데이트되었습니다.",
-                    "timestamp": _cache_timestamp.isoformat() if _cache_timestamp else None
-                }
-            finally:
-                _updating_cache = False
-    except Exception as exc:
-        error_detail = f"캐시 업데이트 실패: {str(exc)}"
-        print(f"Error refreshing cache: {error_detail}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_detail) from exc
+    """V1 API - V2로 리다이렉트"""
+    return refresh_cache_v2(_)
 
 
 @app.post("/api/v2/refresh")
@@ -1067,14 +1331,22 @@ def export_excel(_: bool = Depends(verify_password)) -> FileResponse:
         if not excel_path.exists():
             raise HTTPException(status_code=404, detail="엑셀 파일을 찾을 수 없습니다.")
         
-        # 파일명 인코딩 처리 (한글 파일명 지원)
+        # 파일명 인코딩 처리 (한글 및 특수문자 파일명 지원)
         filename = excel_path.name
+        # RFC 5987 형식으로 인코딩 (UTF-8)
+        filename_encoded = quote(filename, safe='')
+        # ASCII 호환 파일명 (fallback)
+        filename_ascii = filename.encode('ascii', 'ignore').decode('ascii') or "26SS_MLB_DASHBOARD.xlsx"
+        
+        # Content-Disposition 헤더를 RFC 5987 형식으로 설정
+        content_disposition = f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{filename_encoded}"
+        
         return FileResponse(
             path=str(excel_path),
-            filename=filename,
+            filename=filename_ascii,  # ASCII 파일명 사용
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
+                "Content-Disposition": content_disposition
             }
         )
     except FileNotFoundError as exc:
@@ -1095,14 +1367,22 @@ def export_excel_v2(_: bool = Depends(verify_password)) -> FileResponse:
         if not excel_path.exists():
             raise HTTPException(status_code=404, detail="V2 엑셀 파일을 찾을 수 없습니다.")
         
-        # 파일명 인코딩 처리 (한글 파일명 지원)
+        # 파일명 인코딩 처리 (한글 및 특수문자 파일명 지원)
         filename = excel_path.name
+        # RFC 5987 형식으로 인코딩 (UTF-8)
+        filename_encoded = quote(filename, safe='')
+        # ASCII 호환 파일명 (fallback)
+        filename_ascii = filename.encode('ascii', 'ignore').decode('ascii') or "26SS_MLB_DASHBOARD_V2.xlsx"
+        
+        # Content-Disposition 헤더를 RFC 5987 형식으로 설정
+        content_disposition = f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{filename_encoded}"
+        
         return FileResponse(
             path=str(excel_path),
-            filename=filename,
+            filename=filename_ascii,  # ASCII 파일명 사용
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
+                "Content-Disposition": content_disposition
             }
         )
     except FileNotFoundError as exc:
@@ -1117,6 +1397,13 @@ def export_excel_v2(_: bool = Depends(verify_password)) -> FileResponse:
 @app.on_event("startup")
 async def startup_event():
     """서버 시작 시 초기 캐시 업데이트 및 백그라운드 스레드 시작"""
+    # 비밀번호 설정 확인 (디버깅용)
+    password_set = os.getenv("DASHBOARD_PASSWORD")
+    if password_set:
+        print(f"[서버 시작] 환경 변수에서 비밀번호를 사용합니다. (길이: {len(password_set)})")
+    else:
+        print(f"[서버 시작] 기본 비밀번호 사용: MLB123")
+    
     # 초기 캐시 업데이트 (캐시가 없으면)
     if _data_cache is None:
         update_cache()
@@ -1129,12 +1416,12 @@ async def startup_event():
         while True:
             now = datetime.now()
             
-            # 다음 업데이트 시간 계산 (오늘 11시 또는 내일 11시)
+            # 다음 업데이트 시간 계산 (오늘 새벽 2시 또는 내일 새벽 2시)
             if now.hour < UPDATE_HOUR:
-                # 오늘 11시까지 대기
+                # 오늘 새벽 2시까지 대기
                 next_update = now.replace(hour=UPDATE_HOUR, minute=UPDATE_MINUTE, second=0, microsecond=0)
             else:
-                # 내일 11시까지 대기
+                # 내일 새벽 2시까지 대기
                 next_update = (now + timedelta(days=1)).replace(hour=UPDATE_HOUR, minute=UPDATE_MINUTE, second=0, microsecond=0)
             
             wait_seconds = (next_update - now).total_seconds()
@@ -1155,7 +1442,16 @@ async def startup_event():
                 with _update_lock:
                     if should_update_cache() and not _updating_cache:
                         _updating_cache = True
-                        update_cache(force_sync=True)  # 매일 11시 업데이트 시 강제 동기화
+                        # V2 캐시 강제 업데이트
+                        try:
+                            if ONEDRIVE_SHARE_LINK_V2:
+                                ensure_excel_file_v2()
+                            # V2 데이터 재로드
+                            get_cached_data_v2("수량 기준")
+                            get_cached_data_v2("스타일수 기준")
+                            print(f"V2 cache updated at {datetime.now()}")
+                        except Exception as e:
+                            print(f"Error updating V2 cache: {e}")
                         _updating_cache = False
             except Exception:
                 _updating_cache = False

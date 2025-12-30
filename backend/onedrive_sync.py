@@ -91,6 +91,35 @@ def download_from_onedrive_share_link(share_link: str, output_path: Path) -> boo
                 # embed가 없으면 download 추가
                 download_url = share_link.replace("?", "/download?")
         
+        # Google Drive 링크 처리
+        elif "drive.google.com" in share_link:
+            print(f"Detected Google Drive link: {share_link}")
+            # Google Drive 공유 링크에서 파일 ID 추출
+            # 형식: https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+            # 또는: https://drive.google.com/open?id=FILE_ID
+            file_id = None
+            if "/file/d/" in share_link:
+                # /file/d/FILE_ID/ 형식
+                parts = share_link.split("/file/d/")
+                if len(parts) > 1:
+                    file_id = parts[1].split("/")[0].split("?")[0]
+            elif "id=" in share_link:
+                # ?id=FILE_ID 형식
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(share_link)
+                params = parse_qs(parsed.query)
+                if "id" in params:
+                    file_id = params["id"][0]
+            
+            if file_id:
+                # Google Drive 직접 다운로드 링크 생성
+                download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+                print(f"Converted Google Drive link to download URL: {download_url}")
+            else:
+                print(f"Warning: Could not extract file ID from Google Drive link: {share_link}")
+                # 파일 ID를 찾을 수 없으면 원본 링크 사용 시도
+                download_url = share_link
+        
         else:
             # 다른 형식의 링크는 그대로 사용
             print(f"Using link as-is: {share_link}")
