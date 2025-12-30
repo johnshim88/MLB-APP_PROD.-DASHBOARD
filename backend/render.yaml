@@ -12,6 +12,8 @@ services:
       - key: SYNC_INTERVAL
         value: 3600
       - key: SUMMARY_EXCEL
+        value: "★26SS MLB 생산스케쥴_DASHBOARD.xlsx"
+      - key: SUMMARY_EXCEL_V2
         value: "★26SS MLB 생산스케쥴_DASHBOARD_V2.xlsx"
       - key: SUMMARY_SHEET
         value: "수량 기준"

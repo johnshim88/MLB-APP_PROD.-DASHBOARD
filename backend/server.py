@@ -405,6 +405,7 @@ def ensure_excel_file_v2() -> Path:
     """V2 엑셀 파일이 존재하는지 확인하고, 필요시 OneDrive에서 동기화합니다."""
     # 기본 경로에서 파일 확인
     if FILE_PATH_V2.exists():
+        print(f"V2 파일 발견: {FILE_PATH_V2}")
         return FILE_PATH_V2
     
     # 상위 디렉토리에서도 찾기 (로컬 개발 환경 대응)
@@ -416,15 +417,27 @@ def ensure_excel_file_v2() -> Path:
     
     # OneDrive 링크가 설정되어 있고 파일이 없으면 동기화 시도
     if ONEDRIVE_SHARE_LINK_V2:
-        sync_onedrive_file(ONEDRIVE_SHARE_LINK_V2, FILE_PATH_V2, sync_interval=SYNC_INTERVAL, force_download=False)
+        print(f"V2 파일이 없습니다. OneDrive에서 동기화 시도 중... (링크: {ONEDRIVE_SHARE_LINK_V2[:50]}...)")
+        sync_onedrive_file(ONEDRIVE_SHARE_LINK_V2, FILE_PATH_V2, sync_interval=SYNC_INTERVAL, force_download=True)
         if FILE_PATH_V2.exists():
+            print(f"V2 파일 동기화 성공: {FILE_PATH_V2}")
             return FILE_PATH_V2
+        else:
+            print(f"V2 파일 동기화 실패: {FILE_PATH_V2} 파일이 생성되지 않았습니다.")
+    else:
+        print(f"ONEDRIVE_SHARE_LINK_V2 환경 변수가 설정되지 않았습니다.")
+    
+    # V2 파일이 없으면 V1 파일을 대체로 사용 (하위 호환성)
+    if FILE_PATH.exists():
+        print(f"Warning: V2 파일을 찾을 수 없어 V1 파일을 사용합니다: {FILE_PATH}")
+        return FILE_PATH
     
     # 파일이 여전히 없으면 에러
     raise FileNotFoundError(
         f"Excel file V2 not found. Tried:\n"
         f"  - {FILE_PATH_V2}\n"
         f"  - {parent_file_path}\n"
+        f"ONEDRIVE_SHARE_LINK_V2: {'설정됨' if ONEDRIVE_SHARE_LINK_V2 else '설정되지 않음'}\n"
         f"Please ensure the file exists in one of these locations."
     )
 
@@ -606,6 +619,17 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
     print(f"V2 데이터 새로 로드: sheet_name={sheet_name}, file_changed={file_changed}")
     try:
         data = load_summary_v2(sheet_name)
+        
+        # 데이터 유효성 검사
+        if not data or len(data.get("nations", [])) == 0:
+            print(f"Warning: V2 데이터가 비어있습니다. V1 데이터를 시도합니다...")
+            # V1 데이터로 폴백
+            try:
+                data = load_summary(sheet_name)
+                print(f"V1 데이터 로드 성공 (폴백)")
+            except Exception as e2:
+                print(f"V1 데이터 로드도 실패: {e2}")
+        
         # 캐시 업데이트 (파일이 변경되었거나 캐시가 없는 경우)
         if file_changed or _data_cache_v2 is None:
             if file_changed:
@@ -619,11 +643,38 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
             elif sheet_name == "스타일수 기준":
                 _data_cache_v2["style_count"] = data
             _cache_timestamp_v2 = datetime.now()
+        
+        # 최종 데이터 유효성 검사
+        if not data or len(data.get("nations", [])) == 0:
+            print(f"Error: 최종 데이터가 비어있습니다. 빈 구조를 반환합니다.")
+            return {
+                "nations": [],
+                "items": [],
+                "categories": [],
+                "sub_categories": [],
+                "week_info": {
+                    "current_week": DEFAULT_WEEK1,
+                    "next_week": DEFAULT_WEEK2,
+                },
+                "sheet_name": sheet_name,
+            }
+        
         return data
     except Exception as e:
         print(f"V2 데이터 로드 오류: {e}")
         import traceback
         traceback.print_exc()
+        
+        # V1 데이터로 폴백 시도
+        try:
+            print(f"V1 데이터로 폴백 시도 중...")
+            data = load_summary(sheet_name)
+            if data and len(data.get("nations", [])) > 0:
+                print(f"V1 데이터 로드 성공 (폴백)")
+                return data
+        except Exception as e2:
+            print(f"V1 데이터 로드도 실패: {e2}")
+        
         # 최소한의 구조라도 반환하여 프론트엔드 에러 방지
         return {
             "nations": [],
