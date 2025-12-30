@@ -646,6 +646,12 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
             _cache_timestamp_v2 = datetime.now()
         
         return data
+    except FileNotFoundError as fnf_e:
+        # V2 파일이 없는 경우 - 404로 변환
+        print(f"V2 파일을 찾을 수 없음: {fnf_e}")
+        import traceback
+        traceback.print_exc()
+        raise
     except ValueError as ve:
         # 데이터 유효성 검사 실패 - 에러 재발생
         raise
