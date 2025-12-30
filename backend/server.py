@@ -621,7 +621,6 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
                 return cached
     
     # 캐시가 없거나 파일이 변경되었으면 새로 로드
-    print(f"V2 데이터 새로 로드: sheet_name={sheet_name}, file_changed={file_changed}")
     try:
         data = load_summary_v2(sheet_name)
         
@@ -633,10 +632,6 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
         
         # 캐시 업데이트 (파일이 변경되었거나 캐시가 없는 경우)
         if file_changed or _data_cache_v2 is None:
-            if file_changed:
-                print("V2 파일 변경으로 인해 캐시 업데이트 중...")
-            else:
-                print("V2 캐시 초기화 중...")
             if _data_cache_v2 is None:
                 _data_cache_v2 = {}
             if sheet_name == "수량 기준":
@@ -794,17 +789,11 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
 
     try:
         available_sheets = workbook.sheetnames
-        print(f"DEBUG: 사용 가능한 시트 목록: {available_sheets}")
-        
         if target_sheet not in available_sheets:
-            print(f"ERROR: 시트 '{target_sheet}'를 찾을 수 없습니다. 사용 가능한 시트: {', '.join(available_sheets)}")
             raise RuntimeError(
                 f"Worksheet '{target_sheet}' not found in V2 file. Available sheets: {', '.join(available_sheets)}"
             )
-        
         sheet = workbook[target_sheet]
-        print(f"DEBUG: 시트 '{target_sheet}' 로드 성공. 시트 크기: {sheet.max_row}행 x {sheet.max_column}열")
-        
     except KeyError as exc:
         if workbook:
             workbook.close()
@@ -813,18 +802,14 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     try:
         # 헤더에서 주차 정보 추출
         WEEK1, WEEK2 = _find_week_numbers(sheet)
-        print(f"DEBUG: 추출된 주차 정보 - 금주: {WEEK1}, 차주: {WEEK2}")
         
         # 주차 정보에 따라 동적으로 컬럼 생성
         VALUE_COLUMNS = _build_value_columns(WEEK1, WEEK2, "C", "D")
         DETAIL_VALUE_COLUMNS = _build_value_columns(WEEK1, WEEK2, "P", "Q")
-        print(f"DEBUG: VALUE_COLUMNS: {VALUE_COLUMNS}")
-        print(f"DEBUG: DETAIL_VALUE_COLUMNS: {DETAIL_VALUE_COLUMNS}")
         
         data = {}
         for name, config in BLOCK_LAYOUT:
             try:
-                print(f"DEBUG: 데이터 블록 추출 시작 - {name}")
                 current_config = config.copy()
                 if config.get("use_detail_columns"):
                     current_config["value_columns"] = DETAIL_VALUE_COLUMNS
@@ -832,157 +817,109 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
                     current_config["value_columns"] = VALUE_COLUMNS
                 
                 extracted = _extract_block(sheet, current_config)
-                print(f"DEBUG: {name} 추출 완료 - {len(extracted)}개 항목")
-                if len(extracted) > 0:
-                    print(f"DEBUG: {name} 샘플 데이터 (첫 항목): {extracted[0]}")
                 
                 # 국가별/아이템별에 누적값 추가 (F열=누적 목표, G열=누적 실제)
                 # 차주 데이터도 추가 (M열=차주 목표, N열=차주 실적)
+                # 최적화: 행 번호 매핑을 미리 생성하여 반복 접근 최소화
                 if name in ["nations", "items"]:
+                    label_col = config.get("label_col", "B")
+                    label_key = config.get("label_key", "label")
+                    rows = config.get("rows", [])
+                    
+                    # 행 번호 매핑 생성 (한 번만 읽기)
+                    row_map = {}
+                    for row_idx in rows:
+                        try:
+                            label_val = sheet[f"{label_col}{row_idx}"].value
+                            if label_val:
+                                row_map[str(label_val).strip()] = row_idx
+                        except:
+                            continue
+                    
+                    # 누적값 컬럼을 배치로 읽기 (F, G, M, N 열)
                     for row_data in extracted:
-                        row_num = None
-                        # 행 번호 찾기 (label_col에서)
-                        label_col = config.get("label_col", "B")
-                        for row_idx in config.get("rows", []):
-                            try:
-                                if sheet[f"{label_col}{row_idx}"].value == row_data.get(config.get("label_key", "label")):
-                                    row_num = row_idx
-                                    break
-                            except:
-                                continue
+                        label = str(row_data.get(label_key, "")).strip()
+                        row_num = row_map.get(label)
                         
                         if row_num:
                             try:
-                                # F열 = 누적 목표 (금주)
-                                cum_target_col = "F"
-                                cum_target = sheet[f"{cum_target_col}{row_num}"].value
-                                print(f"DEBUG: {name} 행 {row_num} - {cum_target_col}열 값: {cum_target} (타입: {type(cum_target)})")
-                                if cum_target is not None:
-                                    row_data["target_cumulative"] = float(cum_target) if isinstance(cum_target, (int, float)) else 0
-                                else:
-                                    row_data["target_cumulative"] = 0
+                                # 배치로 4개 셀 한 번에 읽기
+                                cum_target = sheet[f"F{row_num}"].value
+                                cum_actual = sheet[f"G{row_num}"].value
+                                next_target = sheet[f"M{row_num}"].value
+                                next_actual = sheet[f"N{row_num}"].value
                                 
-                                # G열 = 누적 실제 (금주)
-                                cum_actual_col = "G"
-                                cum_actual = sheet[f"{cum_actual_col}{row_num}"].value
-                                print(f"DEBUG: {name} 행 {row_num} - {cum_actual_col}열 값: {cum_actual} (타입: {type(cum_actual)})")
-                                if cum_actual is not None:
-                                    row_data["actual_cumulative"] = float(cum_actual) if isinstance(cum_actual, (int, float)) else 0
-                                else:
-                                    row_data["actual_cumulative"] = 0
-                                
-                                # M열 = 차주 목표
-                                next_target_col = "M"
-                                next_target = sheet[f"{next_target_col}{row_num}"].value
-                                if next_target is not None:
-                                    row_data["target_next"] = float(next_target) if isinstance(next_target, (int, float)) else 0
-                                else:
-                                    row_data["target_next"] = 0
-                                
-                                # N열 = 차주 실적
-                                next_actual_col = "N"
-                                next_actual = sheet[f"{next_actual_col}{row_num}"].value
-                                if next_actual is not None:
-                                    row_data["actual_next"] = float(next_actual) if isinstance(next_actual, (int, float)) else 0
-                                else:
-                                    row_data["actual_next"] = 0
-                                
-                                print(f"DEBUG: {name} 행 {row_num} 최종 데이터: target_cumulative={row_data.get('target_cumulative')}, actual_cumulative={row_data.get('actual_cumulative')}")
-                            except Exception as e:
-                                print(f"Warning: Could not extract cumulative values for {name} row {row_num}: {e}")
-                                import traceback
-                                traceback.print_exc()
+                                row_data["target_cumulative"] = float(cum_target) if isinstance(cum_target, (int, float)) else 0
+                                row_data["actual_cumulative"] = float(cum_actual) if isinstance(cum_actual, (int, float)) else 0
+                                row_data["target_next"] = float(next_target) if isinstance(next_target, (int, float)) else 0
+                                row_data["actual_next"] = float(next_actual) if isinstance(next_actual, (int, float)) else 0
+                            except Exception:
+                                # 실패 시 기본값 설정
+                                row_data["target_cumulative"] = 0
+                                row_data["actual_cumulative"] = 0
+                                row_data["target_next"] = 0
+                                row_data["actual_next"] = 0
                 
-                # 세부 복종별: S열을 직접 읽어서 모든 항목을 순서대로 추출
+                # 세부 복종별: S열을 직접 읽어서 모든 항목을 순서대로 추출 (최적화: 배치 읽기)
                 if name == "sub_categories":
-                    # S열을 직접 읽어서 모든 항목 추출 (더 넓은 범위)
                     sub_categories_data = []
-                    # 5행부터 150행까지 넓게 체크 (모든 항목 포함)
                     start_row = 5
                     end_row = 150
-                    seen_indices = set()  # 중복 제거를 위한 집합
-                    found_count = 0
+                    seen_indices = set()
                     
-                    print(f"S열 읽기 시작: {start_row}행부터 {end_row}행까지")
+                    # 배치 읽기: S, O, W, X, AD, AE 열을 한 번에 읽기
+                    cols_to_read = ["S", "O", "W", "X", "AD", "AE"]
+                    col_nums = {col: _col_letter_to_num(col) for col in cols_to_read}
+                    min_col = min(col_nums.values())
+                    max_col = max(col_nums.values())
                     
-                    for row_idx in range(start_row, end_row + 1):
+                    # iter_rows로 배치 읽기
+                    for row_idx, row_values in enumerate(sheet.iter_rows(min_row=start_row, max_row=end_row, min_col=min_col, max_col=max_col, values_only=True), start=start_row):
                         try:
-                            # S열에서 인덱스 읽기
-                            s_cell = sheet[f"S{row_idx}"]
-                            s_val = s_cell.value
-                            
-                            # S열 값 처리
-                            index_val = None
+                            # S열 인덱스 (상대 위치 계산)
+                            s_idx = col_nums["S"] - min_col
+                            s_val = row_values[s_idx] if s_idx < len(row_values) else None
                             
                             if s_val is None:
-                                # None이면 건너뛰기
                                 continue
                             
-                            # 타입별 처리
+                            # 인덱스 값 처리
                             if isinstance(s_val, str):
-                                s_val_stripped = s_val.strip()
-                                if s_val_stripped and s_val_stripped.lower() != "none":
-                                    index_val = s_val_stripped
+                                index_val = s_val.strip()
                             elif isinstance(s_val, (int, float)):
-                                # 숫자인 경우 문자열로 변환
                                 index_val = str(int(s_val)) if s_val == int(s_val) else str(s_val)
                             else:
-                                # 기타 타입은 문자열로 변환
-                                s_str = str(s_val).strip()
-                                if s_str and s_str.lower() != "none":
-                                    index_val = s_str
+                                index_val = str(s_val).strip()
                             
-                            # 유효한 인덱스 값이 없으면 건너뛰기
-                            if not index_val:
-                                continue
-                            
-                            # 중복 체크: 이미 본 인덱스면 건너뛰기
-                            if index_val in seen_indices:
-                                print(f"Warning: 중복된 인덱스 발견 (행 {row_idx}): {index_val} (건너뜀)")
+                            if not index_val or index_val.lower() == "none" or index_val in seen_indices:
                                 continue
                             
                             seen_indices.add(index_val)
                             
-                            # W열에서 누적 목표 읽기 (금주)
-                            w_val = sheet[f"W{row_idx}"].value
-                            target_cumulative = w_val if w_val is not None and isinstance(w_val, (int, float)) else 0
+                            # 다른 열 값 읽기 (상대 위치)
+                            o_idx = col_nums["O"] - min_col
+                            w_idx = col_nums["W"] - min_col
+                            x_idx = col_nums["X"] - min_col
+                            ad_idx = col_nums["AD"] - min_col
+                            ae_idx = col_nums["AE"] - min_col
                             
-                            # X열에서 누적 실제 읽기 (금주)
-                            x_val = sheet[f"X{row_idx}"].value
-                            actual_cumulative = x_val if x_val is not None and isinstance(x_val, (int, float)) else 0
+                            o_val = row_values[o_idx] if o_idx < len(row_values) else None
+                            w_val = row_values[w_idx] if w_idx < len(row_values) else None
+                            x_val = row_values[x_idx] if x_idx < len(row_values) else None
+                            ad_val = row_values[ad_idx] if ad_idx < len(row_values) else None
+                            ae_val = row_values[ae_idx] if ae_idx < len(row_values) else None
                             
-                            # AD열에서 차주 목표 읽기
-                            ad_val = sheet[f"AD{row_idx}"].value
-                            target_next = ad_val if ad_val is not None and isinstance(ad_val, (int, float)) else 0
-                            
-                            # AE열에서 차주 실적 읽기
-                            ae_val = sheet[f"AE{row_idx}"].value
-                            actual_next = ae_val if ae_val is not None and isinstance(ae_val, (int, float)) else 0
-                            
-                            # O열에서 subcategory 읽기 (참고용)
-                            o_val = sheet[f"O{row_idx}"].value
-                            subcategory = str(o_val).strip() if o_val else ""
-                            
-                            # 데이터 추가
                             sub_categories_data.append({
                                 "index": index_val,
-                                "subcategory": subcategory,
-                                "target_cumulative": target_cumulative,
-                                "actual_cumulative": actual_cumulative,
-                                "target_next": target_next,
-                                "actual_next": actual_next,
+                                "subcategory": str(o_val).strip() if o_val else "",
+                                "target_cumulative": float(w_val) if isinstance(w_val, (int, float)) else 0,
+                                "actual_cumulative": float(x_val) if isinstance(x_val, (int, float)) else 0,
+                                "target_next": float(ad_val) if isinstance(ad_val, (int, float)) else 0,
+                                "actual_next": float(ae_val) if isinstance(ae_val, (int, float)) else 0,
                             })
-                            
-                            found_count += 1
-                            # 디버깅: 찾은 항목 로그 출력
-                            print(f"S열 항목 발견 (행 {row_idx}): {index_val} (목표: {target_cumulative}, 실적: {actual_cumulative})")
-                            
-                        except Exception as e:
-                            # 개별 행 오류는 무시하고 계속 진행
-                            print(f"Warning: 행 {row_idx} 처리 중 오류: {e}")
+                        except Exception:
                             continue
                     
-                    print(f"세부 복종별 총 {found_count}개 항목 추출 완료: {[item['index'] for item in sub_categories_data]}")
                     data[name] = sub_categories_data
                 else:
                     data[name] = extracted
@@ -1018,21 +955,7 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
             summary_cells["O18"] = float(o18_val) if o18_val is not None and isinstance(o18_val, (int, float)) else 0
             summary_cells["P18"] = float(p18_val) if p18_val is not None and isinstance(p18_val, (int, float)) else 0
             
-            # 디버깅: 읽은 값 출력
-            print(f"DEBUG: Summary cells 읽기 결과:")
-            print(f"  D18 (금주 목표): {d18_val} -> {summary_cells['D18']}")
-            print(f"  E18 (금주 완료): {e18_val} -> {summary_cells['E18']}")
-            print(f"  F18 (금주 목표 누적): {f18_val} -> {summary_cells['F18']}")
-            print(f"  G18 (금주 완료 누적): {g18_val} -> {summary_cells['G18']}")
-            print(f"  K18 (차주 목표): {k18_val} -> {summary_cells['K18']}")
-            print(f"  L18 (차주 완료): {l18_val} -> {summary_cells['L18']}")
-            print(f"  M18 (차주 목표 누적): {m18_val} -> {summary_cells['M18']}")
-            print(f"  N18 (차주 완료 누적): {n18_val} -> {summary_cells['N18']}")
-            
         except Exception as e:
-            print(f"Warning: Could not extract summary cells: {e}")
-            import traceback
-            traceback.print_exc()
             summary_cells = {
                 "D18": 0, "E18": 0, "F18": 0, "G18": 0,
                 "K18": 0, "L18": 0, "M18": 0, "N18": 0, "O18": 0, "P18": 0
@@ -1043,66 +966,56 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
         suppliers_data = []
         try:
             # 협력사 데이터가 있는 행 범위 확인 (보통 18행 근처, 더 넓은 범위로 확장)
-            # 14행에 (주)노브랜드_WOVEN이 있으므로 포함
-            for row_num in range(5, 50):  # 5행부터 50행까지 확인
+            # 최적화: 배치 읽기로 변경 (AK, AO, AP, AV, AW 열)
+            cols_to_read = ["AK", "AO", "AP", "AV", "AW"]
+            col_nums = {col: _col_letter_to_num(col) for col in cols_to_read}
+            min_col = min(col_nums.values())
+            max_col = max(col_nums.values())
+            
+            for row_idx, row_values in enumerate(sheet.iter_rows(min_row=5, max_row=50, min_col=min_col, max_col=max_col, values_only=True), start=5):
                 try:
-                    # AK열에서 항목명(인덱스) 읽기
-                    ak_val = sheet[f"AK{row_num}"].value
+                    # AK열 값 (상대 위치)
+                    ak_idx = col_nums["AK"] - min_col
+                    ak_val = row_values[ak_idx] if ak_idx < len(row_values) else None
+                    
                     if ak_val is None:
                         continue
                     
-                    # AK열 값 처리 (문자열, 숫자 모두 허용)
+                    # 인덱스 값 처리
                     if isinstance(ak_val, (int, float)):
                         index_val = str(int(ak_val)) if ak_val == int(ak_val) else str(ak_val)
                     else:
                         index_val = str(ak_val).strip() if ak_val else ""
                     
-                    if not index_val or index_val == "" or index_val.lower() == "none":
+                    if not index_val or index_val.lower() == "none":
                         continue
                     
-                    # AO열에서 누적 목표 읽기 (금주)
-                    ao_val = sheet[f"AO{row_num}"].value
-                    target_cumulative = ao_val if ao_val is not None and isinstance(ao_val, (int, float)) else 0
+                    # 14행 특수 처리
+                    if row_idx == 14 and ("(주)노브랜드" in index_val or "노브랜드" in index_val):
+                        index_val = "(주)노브랜드_WOVEN"
                     
-                    # AP열에서 누적 실제 읽기 (금주)
-                    ap_val = sheet[f"AP{row_num}"].value
-                    actual_cumulative = ap_val if ap_val is not None and isinstance(ap_val, (int, float)) else 0
+                    # 다른 열 값 읽기 (상대 위치)
+                    ao_idx = col_nums["AO"] - min_col
+                    ap_idx = col_nums["AP"] - min_col
+                    av_idx = col_nums["AV"] - min_col
+                    aw_idx = col_nums["AW"] - min_col
                     
-                    # AV열에서 차주 목표 읽기
-                    av_val = sheet[f"AV{row_num}"].value
-                    target_next = av_val if av_val is not None and isinstance(av_val, (int, float)) else 0
+                    ao_val = row_values[ao_idx] if ao_idx < len(row_values) else None
+                    ap_val = row_values[ap_idx] if ap_idx < len(row_values) else None
+                    av_val = row_values[av_idx] if av_idx < len(row_values) else None
+                    aw_val = row_values[aw_idx] if aw_idx < len(row_values) else None
                     
-                    # AW열에서 차주 실적 읽기
-                    aw_val = sheet[f"AW{row_num}"].value
-                    actual_next = aw_val if aw_val is not None and isinstance(aw_val, (int, float)) else 0
-                    
-                    # 데이터 추가 (항목명이 있고, 목표나 실적이 0이 아니거나 둘 다 0이어도 항목명만 있으면 추가)
-                    if index_val:
-                        # 14행에 있는 (주)노브랜드는 (주)노브랜드_WOVEN으로 변경
-                        # AK14의 값을 직접 확인하여 변경
-                        if row_num == 14:
-                            # AK14의 원본 값을 확인
-                            ak14_original = str(ak_val).strip() if ak_val else ""
-                            print(f"DEBUG: 협력사 14행 AK값 확인: '{ak14_original}' (원본 타입: {type(ak_val)})")
-                            # "(주)노브랜드"가 포함되어 있으면 변경
-                            if "(주)노브랜드" in ak14_original or "노브랜드" in ak14_original:
-                                index_val = "(주)노브랜드_WOVEN"
-                                print(f"협력사 14행 처리: '{ak14_original}' -> '{index_val}'")
-                        
-                        suppliers_data.append({
-                            "name": index_val,  # AK열 값이 항목명
-                            "index": index_val,  # 인덱스도 동일
-                            "target_cumulative": target_cumulative,
-                            "actual_cumulative": actual_cumulative,
-                            "target_next": target_next,
-                            "actual_next": actual_next,
-                            "value": actual_cumulative  # 기존 호환성을 위해 유지
-                        })
-                except Exception as e:
-                    print(f"Warning: 협력사 데이터 추출 오류 (행 {row_num}): {e}")
+                    suppliers_data.append({
+                        "name": index_val,
+                        "index": index_val,
+                        "target_cumulative": float(ao_val) if isinstance(ao_val, (int, float)) else 0,
+                        "actual_cumulative": float(ap_val) if isinstance(ap_val, (int, float)) else 0,
+                        "target_next": float(av_val) if isinstance(av_val, (int, float)) else 0,
+                        "actual_next": float(aw_val) if isinstance(aw_val, (int, float)) else 0,
+                        "value": float(ap_val) if isinstance(ap_val, (int, float)) else 0
+                    })
+                except Exception:
                     continue
-            
-            print(f"협력사 데이터 추출 완료: {len(suppliers_data)}개 항목")
             
             # 중복 제거 및 정리 (주)노브랜드 처리 포함
             seen = set()
@@ -1128,7 +1041,6 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
             suppliers_data = unique_suppliers
                 
         except Exception as e:
-            print(f"Warning: Could not extract suppliers data: {e}")
             suppliers_data = []
         
         result = {
