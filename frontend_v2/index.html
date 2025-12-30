@@ -996,41 +996,67 @@
             // 캔버스 클리어
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // 바깥쪽 링: 차주 탭인 경우 금주 완료 데이터 먼저 그리기
-            if (isNextWeek && currentWeekActualCumulativeProgress > 0) {
-              // 목표 진행률에 따라 색상 결정
-              let currentWeekColor;
-              if (currentWeekTargetProgressPct <= 90) {
-                currentWeekColor = '#FF6B6B'; // 90% 이하: 빨간색
-              } else if (currentWeekTargetProgressPct >= 97) {
-                currentWeekColor = '#00C49F'; // 97% 이상: 초록색
-              } else {
-                currentWeekColor = '#3A86FF'; // 기본: 파란색
-              }
-              
+            // 바깥쪽 링: 목표 전체를 회색 배경으로 먼저 그리기
+            if (targetCumulativeProgress > 0) {
               ctx.beginPath();
-              ctx.arc(centerX, centerY, outerRadius, -Math.PI / 2, -Math.PI / 2 + currentWeekActualCumulativeProgress * 2 * Math.PI);
-              ctx.strokeStyle = currentWeekColor;
+              ctx.arc(centerX, centerY, outerRadius, -Math.PI / 2, -Math.PI / 2 + targetCumulativeProgress * 2 * Math.PI);
+              ctx.strokeStyle = '#E9ECEF'; // 회색 배경
               ctx.lineWidth = lineWidth;
               ctx.lineCap = 'round';
               ctx.stroke();
             }
             
-            // 바깥쪽 링: 누적 완료 수량 - 금주 탭이거나 차주 탭의 경우 차주 예상 부분
+            // 바깥쪽 링: 실적을 컬러로 그리기 (목표 위에)
             if (isNextWeek) {
-              // 차주 탭: 차주 예상 부분을 #E9ECEF로 그리기 (금주 완료 이후부터)
-              if (cumulativeProgress > currentWeekActualCumulativeProgress) {
+              // 차주 탭: 금주 완료 부분 먼저
+              if (currentWeekActualCumulativeProgress > 0) {
+                // 목표 진행률에 따라 색상 결정
+                let currentWeekColor;
+                if (currentWeekTargetProgressPct <= 90) {
+                  currentWeekColor = '#FF6B6B'; // 90% 이하: 빨간색
+                } else if (currentWeekTargetProgressPct >= 97) {
+                  currentWeekColor = '#00C49F'; // 97% 이상: 초록색
+                } else {
+                  currentWeekColor = '#3A86FF'; // 기본: 파란색
+                }
+                
+                // 실적이 목표를 넘지 않도록 제한
+                const actualProgress = Math.min(currentWeekActualCumulativeProgress, targetCumulativeProgress);
                 ctx.beginPath();
-                ctx.arc(centerX, centerY, outerRadius, 
-                  -Math.PI / 2 + currentWeekActualCumulativeProgress * 2 * Math.PI,
-                  -Math.PI / 2 + cumulativeProgress * 2 * Math.PI);
-                ctx.strokeStyle = '#E9ECEF';
+                ctx.arc(centerX, centerY, outerRadius, -Math.PI / 2, -Math.PI / 2 + actualProgress * 2 * Math.PI);
+                ctx.strokeStyle = currentWeekColor;
+                ctx.lineWidth = lineWidth;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+              }
+              
+              // 차주 탭: 차주 예상 부분
+              if (cumulativeProgress > currentWeekActualCumulativeProgress) {
+                // 목표 진행률에 따라 색상 결정
+                let nextWeekColor;
+                if (targetProgressPct <= 90) {
+                  nextWeekColor = '#FF6B6B'; // 90% 이하: 빨간색
+                } else if (targetProgressPct >= 97) {
+                  nextWeekColor = '#00C49F'; // 97% 이상: 초록색
+                } else {
+                  nextWeekColor = '#3A86FF'; // 기본: 파란색
+                }
+                
+                // 실적이 목표를 넘지 않도록 제한
+                const startAngle = -Math.PI / 2 + currentWeekActualCumulativeProgress * 2 * Math.PI;
+                const endProgress = Math.min(cumulativeProgress, targetCumulativeProgress);
+                const endAngle = -Math.PI / 2 + endProgress * 2 * Math.PI;
+                
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, outerRadius, startAngle, endAngle);
+                ctx.strokeStyle = nextWeekColor;
                 ctx.lineWidth = lineWidth;
                 ctx.lineCap = 'round';
                 ctx.stroke();
               }
             } else {
-              // 금주 탭: 목표 진행률에 따라 색상 결정
+              // 금주 탭: 누적 완료 수량
+              // 목표 진행률에 따라 색상 결정
               let cumulativeColor;
               if (targetProgressPct <= 90) {
                 cumulativeColor = '#FF6B6B'; // 90% 이하: 빨간색
@@ -1040,70 +1066,15 @@
                 cumulativeColor = '#3A86FF'; // 기본: 파란색
               }
               
+              // 실적이 목표를 넘지 않도록 제한
+              const actualProgress = Math.min(cumulativeProgress, targetCumulativeProgress);
               ctx.beginPath();
-              ctx.arc(centerX, centerY, outerRadius, -Math.PI / 2, -Math.PI / 2 + cumulativeProgress * 2 * Math.PI);
+              ctx.arc(centerX, centerY, outerRadius, -Math.PI / 2, -Math.PI / 2 + actualProgress * 2 * Math.PI);
               ctx.strokeStyle = cumulativeColor;
               ctx.lineWidth = lineWidth;
               ctx.lineCap = 'round';
               ctx.stroke();
             }
-          
-          // 바깥쪽 링: 누적 목표 수량 - 누적 완료 수량 위에 이어서 그리기 (투명 + 테두리)
-          // 목표가 누적 완료보다 클 경우에만 표시 (목표 - 완료 부분)
-          if (targetCumulativeProgress > cumulativeProgress) {
-            ctx.save();
-            ctx.strokeStyle = '#94a3b8'; // 회색 테두리
-            ctx.lineWidth = 2; // 얇은 테두리
-            ctx.lineCap = 'round';
-            
-            // 바깥쪽 테두리 (링의 바깥쪽 가장자리)
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, outerRadius + lineWidth / 2 - 1, 
-              -Math.PI / 2 + cumulativeProgress * 2 * Math.PI, 
-              -Math.PI / 2 + targetCumulativeProgress * 2 * Math.PI);
-            ctx.stroke();
-            
-            // 안쪽 테두리 (링의 안쪽 가장자리)
-            ctx.beginPath();
-            ctx.arc(centerX, centerY, outerRadius - lineWidth / 2 + 1, 
-              -Math.PI / 2 + cumulativeProgress * 2 * Math.PI, 
-              -Math.PI / 2 + targetCumulativeProgress * 2 * Math.PI);
-            ctx.stroke();
-            
-            // 시작점 연결선 (완료 지점에서 목표 시작점까지)
-            const startAngle = -Math.PI / 2 + cumulativeProgress * 2 * Math.PI;
-            const startX1 = centerX + (outerRadius + lineWidth / 2 - 1) * Math.cos(startAngle);
-            const startY1 = centerY + (outerRadius + lineWidth / 2 - 1) * Math.sin(startAngle);
-            const startX2 = centerX + (outerRadius - lineWidth / 2 + 1) * Math.cos(startAngle);
-            const startY2 = centerY + (outerRadius - lineWidth / 2 + 1) * Math.sin(startAngle);
-            ctx.beginPath();
-            ctx.moveTo(startX1, startY1);
-            ctx.lineTo(startX2, startY2);
-            ctx.stroke();
-            
-            // 끝점 연결선 (목표 끝점)
-            const endAngle = -Math.PI / 2 + targetCumulativeProgress * 2 * Math.PI;
-            const endX1 = centerX + (outerRadius + lineWidth / 2 - 1) * Math.cos(endAngle);
-            const endY1 = centerY + (outerRadius + lineWidth / 2 - 1) * Math.sin(endAngle);
-            const endX2 = centerX + (outerRadius - lineWidth / 2 + 1) * Math.cos(endAngle);
-            const endY2 = centerY + (outerRadius - lineWidth / 2 + 1) * Math.sin(endAngle);
-            ctx.beginPath();
-            ctx.moveTo(endX1, endY1);
-            ctx.lineTo(endX2, endY2);
-            ctx.stroke();
-            
-            // 목표 끝점 원형 마커 (테두리만)
-            const targetEndX = centerX + outerRadius * Math.cos(endAngle);
-            const targetEndY = centerY + outerRadius * Math.sin(endAngle);
-            ctx.beginPath();
-            ctx.arc(targetEndX, targetEndY, lineWidth / 2, 0, 2 * Math.PI);
-            ctx.fillStyle = 'transparent';
-            ctx.fill();
-            ctx.strokeStyle = '#94a3b8';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            ctx.restore();
-          }
           
           // 안쪽 링: 금주 출고 완료 수량 (찐한 색)
           const currentGradient = ctx.createLinearGradient(
@@ -1151,7 +1122,8 @@
           
           // 끝점 원형 마커 (금주 완료 - 차주 탭일 경우)
           if (isNextWeek && currentWeekActualCumulativeProgress > 0) {
-            const endAngle = -Math.PI / 2 + currentWeekActualCumulativeProgress * 2 * Math.PI;
+            const actualProgress = Math.min(currentWeekActualCumulativeProgress, targetCumulativeProgress);
+            const endAngle = -Math.PI / 2 + actualProgress * 2 * Math.PI;
             const endX = centerX + outerRadius * Math.cos(endAngle);
             const endY = centerY + outerRadius * Math.sin(endAngle);
             ctx.beginPath();
@@ -1170,13 +1142,23 @@
           
           // 끝점 원형 마커 (누적 완료 - 차주 탭이면 차주 예상, 금주 탭이면 누적 완료)
           if (cumulativeProgress > 0) {
-            const endAngle = -Math.PI / 2 + cumulativeProgress * 2 * Math.PI;
+            const actualProgress = Math.min(cumulativeProgress, targetCumulativeProgress);
+            const endAngle = -Math.PI / 2 + actualProgress * 2 * Math.PI;
             const endX = centerX + outerRadius * Math.cos(endAngle);
             const endY = centerY + outerRadius * Math.sin(endAngle);
             ctx.beginPath();
             ctx.arc(endX, endY, lineWidth / 2, 0, 2 * Math.PI);
             if (isNextWeek && cumulativeProgress > currentWeekActualCumulativeProgress) {
-              ctx.fillStyle = '#E9ECEF'; // 차주 예상 부분
+              // 차주 탭: 차주 예상 부분 - 목표 진행률에 따라 색상 결정
+              let nextWeekColor;
+              if (targetProgressPct <= 90) {
+                nextWeekColor = '#FF6B6B';
+              } else if (targetProgressPct >= 97) {
+                nextWeekColor = '#00C49F';
+              } else {
+                nextWeekColor = '#3A86FF';
+              }
+              ctx.fillStyle = nextWeekColor;
             } else {
               // 금주 탭: 목표 진행률에 따라 색상 결정
               let cumulativeColor;
