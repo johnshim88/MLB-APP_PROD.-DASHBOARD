@@ -11,10 +11,10 @@ import sys
 
 # 경로 설정
 # 회사 OneDrive 경로 (원본 파일)
-SOURCE_FILE = Path(r"C:\Users\AD1060\OneDrive - F&F\F_SO_ MLB 소싱팀 - 26SS\생산스케쥴\DASHBOARD\★26SS MLB 생산스케쥴_DASHBOARD.xlsx")
+SOURCE_FILE = Path(r"C:\Users\AD1060\OneDrive - F&F\F_SO_ MLB 소싱팀 - 26SS\생산스케쥴\DASHBOARD\★26SS MLB 생산스케쥴_DASHBOARD_V2.xlsx")
 
 # Google Drive 경로 (복사본 저장 위치)
-DEST_FILE = Path(r"G:\내 드라이브\MLB PROD DASHBOARD\★26SS MLB 생산스케쥴_DASHBOARD.xlsx")
+DEST_FILE = Path(r"G:\내 드라이브\MLB PROD DASHBOARD\★26SS MLB 생산스케쥴_DASHBOARD_V2.xlsx")
 
 # 로그 파일 경로 (선택사항)
 LOG_FILE = Path(r"G:\내 드라이브\MLB PROD DASHBOARD\copy_log.txt")

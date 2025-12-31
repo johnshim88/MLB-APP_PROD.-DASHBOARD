@@ -212,6 +212,8 @@ _cache_lock = threading.Lock()
 _data_cache_v2: Optional[Dict[str, Any]] = None
 _cache_timestamp_v2: Optional[datetime] = None
 _cache_lock_v2 = threading.Lock()
+# 캐시 TTL (초) - 5분간 캐시 유지 (파일 수정 시간 체크 대신 시간 기반)
+CACHE_TTL_SECONDS = 300  # 5분
 
 # 업데이트 시간 설정 (새벽 2시)
 UPDATE_HOUR = 2
@@ -594,33 +596,23 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
 
 
 def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
-    """V2 캐시된 데이터를 반환합니다. 파일이 변경되었으면 새로 로드합니다."""
+    """V2 캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용합니다."""
     global _data_cache_v2, _cache_timestamp_v2
     
-    # 파일 존재 확인 및 수정 시간 체크
-    file_changed = False
-    if FILE_PATH_V2.exists() and _cache_timestamp_v2 is not None:
-        file_mtime_ts = FILE_PATH_V2.stat().st_mtime
-        file_mtime = datetime.fromtimestamp(file_mtime_ts)
-        # 타임존 없이 비교 (둘 다 naive datetime)
-        cache_time_naive = _cache_timestamp_v2.replace(tzinfo=None) if _cache_timestamp_v2.tzinfo else _cache_timestamp_v2
-        # 파일이 캐시 이후에 수정되었는지 확인 (1초 여유)
-        if file_mtime > cache_time_naive:
-            file_changed = True
-            print(f"V2 파일이 변경되었습니다. 캐시 시간: {_cache_timestamp_v2}, 파일 수정 시간: {file_mtime}")
+    # 캐시가 있고 TTL 내에 있으면 캐시 반환 (파일 수정 시간 체크 제거로 성능 향상)
+    if _data_cache_v2 is not None and _cache_timestamp_v2 is not None:
+        cache_age = (datetime.now() - _cache_timestamp_v2).total_seconds()
+        if cache_age < CACHE_TTL_SECONDS:
+            if sheet_name == "수량 기준":
+                cached = _data_cache_v2.get("quantity")
+                if cached and isinstance(cached, dict) and len(cached) > 0:
+                    return cached
+            elif sheet_name == "스타일수 기준":
+                cached = _data_cache_v2.get("style_count")
+                if cached and isinstance(cached, dict) and len(cached) > 0:
+                    return cached
     
-    # 캐시가 있고 파일이 변경되지 않았으면 캐시 반환
-    if _data_cache_v2 is not None and not file_changed:
-        if sheet_name == "수량 기준":
-            cached = _data_cache_v2.get("quantity")
-            if cached and isinstance(cached, dict) and len(cached) > 0:
-                return cached
-        elif sheet_name == "스타일수 기준":
-            cached = _data_cache_v2.get("style_count")
-            if cached and isinstance(cached, dict) and len(cached) > 0:
-                return cached
-    
-    # 캐시가 없거나 파일이 변경되었으면 새로 로드
+    # 캐시가 없거나 TTL이 지났으면 새로 로드
     try:
         data = load_summary_v2(sheet_name)
         
@@ -630,8 +622,8 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
             print(f"Error: {error_msg}")
             raise ValueError(error_msg)
         
-        # 캐시 업데이트 (파일이 변경되었거나 캐시가 없는 경우)
-        if file_changed or _data_cache_v2 is None:
+        # 캐시 업데이트
+        with _cache_lock_v2:
             if _data_cache_v2 is None:
                 _data_cache_v2 = {}
             if sheet_name == "수량 기준":
@@ -836,14 +828,14 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
                         except:
                             continue
                     
-                    # 누적값 컬럼을 배치로 읽기 (F, G, M, N 열)
+                    # 누적값 컬럼 읽기 (F, G, M, N 열) - 개별 접근이 더 빠름
                     for row_data in extracted:
                         label = str(row_data.get(label_key, "")).strip()
                         row_num = row_map.get(label)
                         
                         if row_num:
                             try:
-                                # 배치로 4개 셀 한 번에 읽기
+                                # 개별 셀 접근 (openpyxl의 read_only 모드에서는 빠름)
                                 cum_target = sheet[f"F{row_num}"].value
                                 cum_actual = sheet[f"G{row_num}"].value
                                 next_target = sheet[f"M{row_num}"].value
@@ -1157,29 +1149,18 @@ def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
     try:
         data = get_cached_data_v2("수량 기준")
         
-        # 캐시 타임스탬프 및 파일 수정 시간 추가 (V2 버전)
+        # 캐시 타임스탬프 추가 (V2 버전) - 파일 수정 시간 체크 제거로 성능 향상
         cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
-        file_mtime = None
-        if FILE_PATH_V2.exists():
-            file_mtime = datetime.fromtimestamp(FILE_PATH_V2.stat().st_mtime).isoformat()
         
-        # 메타데이터 추가
-        data["_meta"] = {
-            "cache_timestamp": cache_timestamp,
-            "file_modified_time": file_mtime,
-            "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
-        }
-        
-        # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
+        # 캐시 헤더 추가 (5분 캐시, ETag 기반)
         cache_timestamp_str = cache_timestamp or ""
         # ETag 생성 최적화: week_info만 사용하여 해시 계산
         week_info_str = json.dumps(data.get("week_info", {}), sort_keys=True, ensure_ascii=False)
         etag = f'"{hash(week_info_str + cache_timestamp_str)}"'
         headers = {
-            "Cache-Control": "public, max-age=3600, stale-while-revalidate=60",
+            "Cache-Control": f"public, max-age={CACHE_TTL_SECONDS}, stale-while-revalidate=60",
             "ETag": etag,
             "X-Cache-Timestamp": cache_timestamp_str,
-            "X-File-Modified": file_mtime or "",
         }
         # JSON 직렬화 최적화 (separators로 공백 제거하여 크기 감소)
         return Response(
@@ -1234,29 +1215,18 @@ def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
     try:
         data = get_cached_data_v2("스타일수 기준")
         
-        # 캐시 타임스탬프 및 파일 수정 시간 추가 (V2 버전)
+        # 캐시 타임스탬프 추가 (V2 버전) - 파일 수정 시간 체크 제거로 성능 향상
         cache_timestamp = _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None
-        file_mtime = None
-        if FILE_PATH_V2.exists():
-            file_mtime = datetime.fromtimestamp(FILE_PATH_V2.stat().st_mtime).isoformat()
         
-        # 메타데이터 추가
-        data["_meta"] = {
-            "cache_timestamp": cache_timestamp,
-            "file_modified_time": file_mtime,
-            "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
-        }
-        
-        # 캐시 헤더 추가 (1시간 캐시, ETag 기반)
+        # 캐시 헤더 추가 (5분 캐시, ETag 기반)
         cache_timestamp_str = cache_timestamp or ""
         # ETag 생성 최적화: week_info만 사용하여 해시 계산
         week_info_str = json.dumps(data.get("week_info", {}), sort_keys=True, ensure_ascii=False)
         etag = f'"{hash(week_info_str + cache_timestamp_str)}"'
         headers = {
-            "Cache-Control": "public, max-age=3600, stale-while-revalidate=60",
+            "Cache-Control": f"public, max-age={CACHE_TTL_SECONDS}, stale-while-revalidate=60",
             "ETag": etag,
             "X-Cache-Timestamp": cache_timestamp_str,
-            "X-File-Modified": file_mtime or "",
         }
         # JSON 직렬화 최적화 (separators로 공백 제거하여 크기 감소)
         return Response(
