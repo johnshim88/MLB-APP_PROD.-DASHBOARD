@@ -1144,7 +1144,7 @@ def get_quantity_summary(_: bool = Depends(verify_password)) -> Response:
 
 
 @app.get("/api/v2/quantity")
-def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
+def get_quantity_summary_v2(request: Request, _: bool = Depends(verify_password)) -> Response:
     """V2 수량 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
         data = get_cached_data_v2("수량 기준")
@@ -1157,6 +1157,19 @@ def get_quantity_summary_v2(_: bool = Depends(verify_password)) -> Response:
         # ETag 생성 최적화: week_info만 사용하여 해시 계산
         week_info_str = json.dumps(data.get("week_info", {}), sort_keys=True, ensure_ascii=False)
         etag = f'"{hash(week_info_str + cache_timestamp_str)}"'
+        
+        # If-None-Match 헤더 확인 (조건부 요청 지원)
+        if_none_match = request.headers.get("If-None-Match", "").strip('"')
+        if if_none_match and if_none_match == etag.strip('"'):
+            # 데이터가 변경되지 않았으면 304 Not Modified 반환 (매우 빠름)
+            return Response(
+                status_code=304,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": f"public, max-age={CACHE_TTL_SECONDS}, stale-while-revalidate=60",
+                }
+            )
+        
         headers = {
             "Cache-Control": f"public, max-age={CACHE_TTL_SECONDS}, stale-while-revalidate=60",
             "ETag": etag,
@@ -1210,7 +1223,7 @@ def get_style_count_summary(_: bool = Depends(verify_password)) -> Response:
 
 
 @app.get("/api/v2/style-count")
-def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
+def get_style_count_summary_v2(request: Request, _: bool = Depends(verify_password)) -> Response:
     """V2 스타일수 기준 데이터를 주차 정보와 함께 반환합니다. (캐시 사용)"""
     try:
         data = get_cached_data_v2("스타일수 기준")
@@ -1223,6 +1236,19 @@ def get_style_count_summary_v2(_: bool = Depends(verify_password)) -> Response:
         # ETag 생성 최적화: week_info만 사용하여 해시 계산
         week_info_str = json.dumps(data.get("week_info", {}), sort_keys=True, ensure_ascii=False)
         etag = f'"{hash(week_info_str + cache_timestamp_str)}"'
+        
+        # If-None-Match 헤더 확인 (조건부 요청 지원)
+        if_none_match = request.headers.get("If-None-Match", "").strip('"')
+        if if_none_match and if_none_match == etag.strip('"'):
+            # 데이터가 변경되지 않았으면 304 Not Modified 반환 (매우 빠름)
+            return Response(
+                status_code=304,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": f"public, max-age={CACHE_TTL_SECONDS}, stale-while-revalidate=60",
+                }
+            )
+        
         headers = {
             "Cache-Control": f"public, max-age={CACHE_TTL_SECONDS}, stale-while-revalidate=60",
             "ETag": etag,
@@ -1387,6 +1413,30 @@ async def startup_event():
     # 초기 캐시 업데이트 (캐시가 없으면)
     if _data_cache is None:
         update_cache()
+    
+    # V2 캐시 미리 로드 (서버 시작 시 warm-up으로 첫 요청 속도 개선)
+    print(f"[서버 시작] V2 캐시 미리 로드 중...")
+    try:
+        # 백그라운드 스레드에서 로드하여 서버 시작 속도에 영향 없도록
+        def preload_v2_cache():
+            try:
+                # V2 파일이 있으면 캐시 미리 로드
+                if FILE_PATH_V2.exists() or (ONEDRIVE_SHARE_LINK_V2 and ensure_excel_file_v2()):
+                    print(f"[서버 시작] V2 캐시 warm-up 시작...")
+                    start_time = time.time()
+                    # 수량 기준과 스타일수 기준 모두 미리 로드
+                    get_cached_data_v2("수량 기준")
+                    get_cached_data_v2("스타일수 기준")
+                    elapsed = time.time() - start_time
+                    print(f"[서버 시작] V2 캐시 warm-up 완료 ({elapsed:.2f}초)")
+            except Exception as e:
+                print(f"[서버 시작] V2 캐시 warm-up 실패 (첫 요청 시 로드됨): {e}")
+        
+        # 백그라운드에서 비동기로 로드
+        preload_thread = threading.Thread(target=preload_v2_cache, daemon=True)
+        preload_thread.start()
+    except Exception as e:
+        print(f"[서버 시작] V2 캐시 warm-up 초기화 실패: {e}")
     
     # 백그라운드 스레드에서 매일 11시에 업데이트 체크
     def background_update_check():

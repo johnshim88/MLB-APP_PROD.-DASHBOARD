@@ -524,24 +524,33 @@
           "Authorization": `Basic ${encodedPassword}`
         };
 
-        // 로그인 검증을 위해 /api/v2/quantity 엔드포인트 사용 (인증 필요)
-        console.log("API 호출:", `${API_BASE_URL}/api/v2/quantity`);
-        fetch(`${API_BASE_URL}/api/v2/quantity`, {
+        // 로그인 검증을 위해 /api/v2/auth/verify 엔드포인트 사용 (파일 로드 없이 인증만 확인)
+        console.log("로그인 인증 시도:", `${API_BASE_URL}/api/v2/auth/verify`);
+        fetch(`${API_BASE_URL}/api/v2/auth/verify`, {
           headers: AUTH_HEADERS
         })
           .then(resp => {
-            console.log("응답 상태:", resp.status);
+            console.log("인증 응답 상태:", resp.status);
             if (resp.ok) {
-              console.log("로그인 성공");
+              console.log("로그인 성공 - 대시보드 초기화 중...");
               showLoading("정보 접근 중...");
               document.getElementById("login-overlay").classList.add("hidden");
               document.getElementById("dashboard-content").classList.remove("hidden");
+              // 로그인 성공 후 대시보드 초기화
               initDashboard();
-            } else {
-              console.log("로그인 실패:", resp.status);
+            } else if (resp.status === 401) {
+              console.log("인증 실패: 잘못된 비밀번호");
               hideLoading();
               errorDiv.classList.add("show");
               passwordInput.value = "";
+            } else {
+              console.log("인증 오류:", resp.status);
+              hideLoading();
+              errorDiv.classList.add("show");
+              passwordInput.value = "";
+              resp.text().then(text => {
+                console.error("오류 상세:", text);
+              });
             }
           })
           .catch(err => {
