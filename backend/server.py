@@ -212,11 +212,11 @@ _cache_lock = threading.Lock()
 _data_cache_v2: Optional[Dict[str, Any]] = None
 _cache_timestamp_v2: Optional[datetime] = None
 _cache_lock_v2 = threading.Lock()
-# 캐시 TTL (초) - 5분간 캐시 유지 (파일 수정 시간 체크 대신 시간 기반)
-CACHE_TTL_SECONDS = 300  # 5분
+# 캐시 TTL (초) - 24시간간 캐시 유지 (엑셀 파일이 하루에 한 번만 업데이트되므로 긴 캐시로 성능 최적화)
+CACHE_TTL_SECONDS = 86400  # 24시간 (하루)
 
-# 업데이트 시간 설정 (새벽 2시)
-UPDATE_HOUR = 2
+# 업데이트 시간 설정 (오전 11시 - 엑셀 파일이 10시 30분~11시 사이에 업데이트됨)
+UPDATE_HOUR = 11
 UPDATE_MINUTE = 0
 
 BLOCK_LAYOUT = (
@@ -452,7 +452,7 @@ def ensure_excel_file_v2() -> Path:
 def should_update_cache() -> bool:
     """캐시를 업데이트해야 하는지 확인합니다.
     - 캐시가 없으면 업데이트
-    - 오전 11시 이후이고 오늘 업데이트하지 않았으면 업데이트
+    - 오전 11시 이후이고 오늘 업데이트하지 않았으면 업데이트 (엑셀 파일이 10시 30분~11시 사이에 업데이트됨)
     - 단순 시간 기반 체크만 수행 (파일 변경 시간 체크 제거)
     """
     global _cache_timestamp
@@ -536,46 +536,34 @@ _updating_cache = False
 _update_lock = threading.Lock()
 
 def get_cached_data(sheet_name: str) -> Dict[str, Any]:
-    """캐시된 데이터를 반환합니다. 파일이 변경되었으면 새로 로드합니다."""
+    """캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용합니다 (파일 수정 시간 체크 제거로 성능 향상)."""
     global _data_cache, _updating_cache, _cache_timestamp
     
-    # 파일 존재 확인 및 수정 시간 체크
-    file_changed = False
-    if FILE_PATH.exists() and _cache_timestamp is not None:
-        file_mtime_ts = FILE_PATH.stat().st_mtime
-        file_mtime = datetime.fromtimestamp(file_mtime_ts)
-        # 타임존 없이 비교 (둘 다 naive datetime)
-        cache_time_naive = _cache_timestamp.replace(tzinfo=None) if _cache_timestamp.tzinfo else _cache_timestamp
-        # 파일이 캐시 이후에 수정되었는지 확인 (1초 여유)
-        if file_mtime > cache_time_naive:
-            file_changed = True
-            print(f"파일이 변경되었습니다. 캐시 시간: {_cache_timestamp}, 파일 수정 시간: {file_mtime}")
+    # 캐시가 있고 TTL 내에 있으면 캐시 반환 (파일 수정 시간 체크 제거로 성능 향상)
+    if _data_cache is not None and _cache_timestamp is not None:
+        cache_age = (datetime.now() - _cache_timestamp).total_seconds()
+        if cache_age < CACHE_TTL_SECONDS:
+            if sheet_name == "수량 기준":
+                cached = _data_cache.get("quantity")
+                if cached and isinstance(cached, dict) and len(cached) > 0:
+                    return cached
+            elif sheet_name == "스타일수 기준":
+                cached = _data_cache.get("style_count")
+                if cached and isinstance(cached, dict) and len(cached) > 0:
+                    return cached
     
-    # 캐시가 있고 파일이 변경되지 않았으면 캐시 반환
-    if _data_cache is not None and not file_changed:
-        if sheet_name == "수량 기준":
-            cached = _data_cache.get("quantity")
-            if cached and isinstance(cached, dict) and len(cached) > 0:
-                return cached
-        elif sheet_name == "스타일수 기준":
-            cached = _data_cache.get("style_count")
-            if cached and isinstance(cached, dict) and len(cached) > 0:
-                return cached
-    
-    # 캐시가 없거나 파일이 변경되었으면 새로 로드
-    print(f"데이터 새로 로드: sheet_name={sheet_name}, file_changed={file_changed}")
+    # 캐시가 없거나 TTL이 지났으면 새로 로드
+    print(f"데이터 새로 로드: sheet_name={sheet_name}")
     try:
         data = load_summary(sheet_name)
-        # 캐시 업데이트 (파일이 변경된 경우)
-        if file_changed:
-            print("파일 변경으로 인해 캐시 업데이트 중...")
-            if _data_cache is None:
-                _data_cache = {}
-            if sheet_name == "수량 기준":
-                _data_cache["quantity"] = data
-            elif sheet_name == "스타일수 기준":
-                _data_cache["style_count"] = data
-            _cache_timestamp = datetime.now()
+        # 캐시 업데이트
+        if _data_cache is None:
+            _data_cache = {}
+        if sheet_name == "수량 기준":
+            _data_cache["quantity"] = data
+        elif sheet_name == "스타일수 기준":
+            _data_cache["style_count"] = data
+        _cache_timestamp = datetime.now()
         return data
     except Exception as e:
         print(f"데이터 로드 오류: {e}")
@@ -812,45 +800,58 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
                 
                 # 국가별/아이템별에 누적값 추가 (F열=누적 목표, G열=누적 실제)
                 # 차주 데이터도 추가 (M열=차주 목표, N열=차주 실적)
-                # 최적화: 행 번호 매핑을 미리 생성하여 반복 접근 최소화
+                # 최적화: 배치 읽기로 성능 향상
                 if name in ["nations", "items"]:
                     label_col = config.get("label_col", "B")
                     label_key = config.get("label_key", "label")
                     rows = config.get("rows", [])
                     
-                    # 행 번호 매핑 생성 (한 번만 읽기)
-                    row_map = {}
-                    for row_idx in rows:
+                    if not rows:
+                        continue
+                    
+                    # 배치 읽기: B, F, G, M, N 열을 한 번에 읽기
+                    min_row = min(rows)
+                    max_row = max(rows)
+                    cols_to_read = [label_col, "F", "G", "M", "N"]
+                    col_nums = {col: _col_letter_to_num(col) for col in cols_to_read}
+                    min_col = min(col_nums.values())
+                    max_col = max(col_nums.values())
+                    
+                    # 배치 읽기로 행 데이터 매핑 생성
+                    row_data_map = {}
+                    for row_idx, row_values in enumerate(sheet.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col, values_only=True), start=min_row):
+                        if row_idx not in rows:
+                            continue
                         try:
-                            label_val = sheet[f"{label_col}{row_idx}"].value
+                            label_idx = col_nums[label_col] - min_col
+                            f_idx = col_nums["F"] - min_col
+                            g_idx = col_nums["G"] - min_col
+                            m_idx = col_nums["M"] - min_col
+                            n_idx = col_nums["N"] - min_col
+                            
+                            label_val = row_values[label_idx] if label_idx < len(row_values) else None
                             if label_val:
-                                row_map[str(label_val).strip()] = row_idx
-                        except:
+                                label_str = str(label_val).strip()
+                                row_data_map[label_str] = {
+                                    "target_cumulative": float(row_values[f_idx]) if f_idx < len(row_values) and isinstance(row_values[f_idx], (int, float)) else 0,
+                                    "actual_cumulative": float(row_values[g_idx]) if g_idx < len(row_values) and isinstance(row_values[g_idx], (int, float)) else 0,
+                                    "target_next": float(row_values[m_idx]) if m_idx < len(row_values) and isinstance(row_values[m_idx], (int, float)) else 0,
+                                    "actual_next": float(row_values[n_idx]) if n_idx < len(row_values) and isinstance(row_values[n_idx], (int, float)) else 0,
+                                }
+                        except Exception:
                             continue
                     
-                    # 누적값 컬럼 읽기 (F, G, M, N 열) - 개별 접근이 더 빠름
+                    # 추출된 데이터에 누적값 추가
                     for row_data in extracted:
                         label = str(row_data.get(label_key, "")).strip()
-                        row_num = row_map.get(label)
-                        
-                        if row_num:
-                            try:
-                                # 개별 셀 접근 (openpyxl의 read_only 모드에서는 빠름)
-                                cum_target = sheet[f"F{row_num}"].value
-                                cum_actual = sheet[f"G{row_num}"].value
-                                next_target = sheet[f"M{row_num}"].value
-                                next_actual = sheet[f"N{row_num}"].value
-                                
-                                row_data["target_cumulative"] = float(cum_target) if isinstance(cum_target, (int, float)) else 0
-                                row_data["actual_cumulative"] = float(cum_actual) if isinstance(cum_actual, (int, float)) else 0
-                                row_data["target_next"] = float(next_target) if isinstance(next_target, (int, float)) else 0
-                                row_data["actual_next"] = float(next_actual) if isinstance(next_actual, (int, float)) else 0
-                            except Exception:
-                                # 실패 시 기본값 설정
-                                row_data["target_cumulative"] = 0
-                                row_data["actual_cumulative"] = 0
-                                row_data["target_next"] = 0
-                                row_data["actual_next"] = 0
+                        if label in row_data_map:
+                            row_data.update(row_data_map[label])
+                        else:
+                            # 기본값 설정
+                            row_data["target_cumulative"] = 0
+                            row_data["actual_cumulative"] = 0
+                            row_data["target_next"] = 0
+                            row_data["actual_next"] = 0
                 
                 # 세부 복종별: S열을 직접 읽어서 모든 항목을 순서대로 추출 (최적화: 배치 읽기)
                 if name == "sub_categories":
@@ -918,34 +919,19 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
             except Exception as e:
                 data[name] = []
         
-        # V2 특화: 금주 및 차주 summary_cells 값 추출
+        # V2 특화: 금주 및 차주 summary_cells 값 추출 (배치 읽기로 최적화)
         summary_cells = {}
         try:
-            # 금주 데이터
-            d18_val = sheet["D18"].value
-            e18_val = sheet["E18"].value
-            f18_val = sheet["F18"].value
-            g18_val = sheet["G18"].value
+            # 18행의 D~P 열을 한 번에 읽기
+            row_values = list(sheet.iter_rows(min_row=18, max_row=18, min_col=4, max_col=16, values_only=True))[0]
+            cell_mapping = {
+                "D18": 0, "E18": 1, "F18": 2, "G18": 3,
+                "K18": 7, "L18": 8, "M18": 9, "N18": 10, "O18": 11, "P18": 12
+            }
             
-            summary_cells["D18"] = float(d18_val) if d18_val is not None and isinstance(d18_val, (int, float)) else 0
-            summary_cells["E18"] = float(e18_val) if e18_val is not None and isinstance(e18_val, (int, float)) else 0
-            summary_cells["F18"] = float(f18_val) if f18_val is not None and isinstance(f18_val, (int, float)) else 0
-            summary_cells["G18"] = float(g18_val) if g18_val is not None and isinstance(g18_val, (int, float)) else 0
-            
-            # 차주 데이터
-            k18_val = sheet["K18"].value
-            l18_val = sheet["L18"].value
-            m18_val = sheet["M18"].value
-            n18_val = sheet["N18"].value
-            o18_val = sheet["O18"].value
-            p18_val = sheet["P18"].value
-            
-            summary_cells["K18"] = float(k18_val) if k18_val is not None and isinstance(k18_val, (int, float)) else 0
-            summary_cells["L18"] = float(l18_val) if l18_val is not None and isinstance(l18_val, (int, float)) else 0
-            summary_cells["M18"] = float(m18_val) if m18_val is not None and isinstance(m18_val, (int, float)) else 0
-            summary_cells["N18"] = float(n18_val) if n18_val is not None and isinstance(n18_val, (int, float)) else 0
-            summary_cells["O18"] = float(o18_val) if o18_val is not None and isinstance(o18_val, (int, float)) else 0
-            summary_cells["P18"] = float(p18_val) if p18_val is not None and isinstance(p18_val, (int, float)) else 0
+            for cell_name, idx in cell_mapping.items():
+                val = row_values[idx] if idx < len(row_values) else None
+                summary_cells[cell_name] = float(val) if val is not None and isinstance(val, (int, float)) else 0
             
         except Exception as e:
             summary_cells = {
@@ -1092,21 +1078,13 @@ def get_password_info() -> Dict[str, Any]:
 @app.get("/api/cache-status")
 def get_cache_status(_: bool = Depends(verify_password)) -> Dict[str, Any]:
     """캐시 상태 정보를 반환합니다."""
-    file_mtime = None
-    file_size = None
-    if FILE_PATH.exists():
-        stat = FILE_PATH.stat()
-        file_mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
-        file_size = stat.st_size
-    
+    # V2 캐시 정보 반환 (성능 향상을 위해 파일 stat() 호출 제거)
     return {
-        "cache_timestamp": _cache_timestamp.isoformat() if _cache_timestamp else None,
-        "file_modified_time": file_mtime,
-        "file_size": file_size,
-        "file_exists": FILE_PATH.exists(),
-        "cache_age_seconds": (datetime.now() - _cache_timestamp).total_seconds() if _cache_timestamp else None,
-        "next_update_time": None,  # 다음 업데이트 시간 계산
-        "has_cache": _data_cache is not None,
+        "cache_timestamp": _cache_timestamp_v2.isoformat() if _cache_timestamp_v2 else None,
+        "cache_age_seconds": (datetime.now() - _cache_timestamp_v2).total_seconds() if _cache_timestamp_v2 else None,
+        "cache_ttl_seconds": CACHE_TTL_SECONDS,
+        "has_cache": _data_cache_v2 is not None,
+        "file_exists": FILE_PATH_V2.exists() if FILE_PATH_V2 else False,
     }
 
 
@@ -1438,7 +1416,7 @@ async def startup_event():
     except Exception as e:
         print(f"[서버 시작] V2 캐시 warm-up 초기화 실패: {e}")
     
-    # 백그라운드 스레드에서 매일 11시에 업데이트 체크
+    # 백그라운드 스레드에서 매일 11시에 업데이트 체크 (엑셀 파일이 10시 30분~11시 사이에 업데이트됨)
     def background_update_check():
         """백그라운드에서 매일 11시에 업데이트를 수행합니다."""
         global _updating_cache
@@ -1446,12 +1424,12 @@ async def startup_event():
         while True:
             now = datetime.now()
             
-            # 다음 업데이트 시간 계산 (오늘 새벽 2시 또는 내일 새벽 2시)
+            # 다음 업데이트 시간 계산 (오늘 오전 11시 또는 내일 오전 11시)
             if now.hour < UPDATE_HOUR:
-                # 오늘 새벽 2시까지 대기
+                # 오늘 오전 11시까지 대기
                 next_update = now.replace(hour=UPDATE_HOUR, minute=UPDATE_MINUTE, second=0, microsecond=0)
             else:
-                # 내일 새벽 2시까지 대기
+                # 내일 오전 11시까지 대기
                 next_update = (now + timedelta(days=1)).replace(hour=UPDATE_HOUR, minute=UPDATE_MINUTE, second=0, microsecond=0)
             
             wait_seconds = (next_update - now).total_seconds()
