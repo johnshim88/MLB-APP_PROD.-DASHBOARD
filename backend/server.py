@@ -212,6 +212,8 @@ _cache_lock = threading.Lock()
 _data_cache_v2: Optional[Dict[str, Any]] = None
 _cache_timestamp_v2: Optional[datetime] = None
 _cache_lock_v2 = threading.Lock()
+# V2 파일 경로 캐시 (성능 최적화: 파일 존재 확인 최소화)
+_cached_file_path_v2: Optional[Path] = None
 # 캐시 TTL (초) - 24시간간 캐시 유지 (엑셀 파일이 하루에 한 번만 업데이트되므로 긴 캐시로 성능 최적화)
 CACHE_TTL_SECONDS = 86400  # 24시간 (하루)
 
@@ -404,17 +406,24 @@ def ensure_excel_file() -> Path:
 
 
 def ensure_excel_file_v2() -> Path:
-    """V2 엑셀 파일이 존재하는지 확인하고, 필요시 OneDrive에서 동기화합니다."""
+    """V2 엑셀 파일이 존재하는지 확인하고, 필요시 OneDrive에서 동기화합니다.
+    성능 최적화: 파일 경로를 캐시하여 불필요한 파일 시스템 접근을 최소화합니다."""
+    global _cached_file_path_v2
+    
+    # 캐시된 경로가 있고 파일이 존재하면 바로 반환 (성능 최적화)
+    if _cached_file_path_v2 is not None and _cached_file_path_v2.exists():
+        return _cached_file_path_v2
+    
     # 기본 경로에서 파일 확인
     if FILE_PATH_V2.exists():
-        print(f"V2 파일 발견: {FILE_PATH_V2}")
+        _cached_file_path_v2 = FILE_PATH_V2
         return FILE_PATH_V2
     
     # 상위 디렉토리에서도 찾기 (로컬 개발 환경 대응)
     parent_dir = BASE_DIR.parent
     parent_file_path = parent_dir / EXCEL_FILENAME_V2
     if parent_file_path.exists():
-        print(f"V2 파일을 상위 디렉토리에서 찾았습니다: {parent_file_path}")
+        _cached_file_path_v2 = parent_file_path
         return parent_file_path
     
     # OneDrive 링크가 설정되어 있고 파일이 없으면 동기화 시도
@@ -422,7 +431,7 @@ def ensure_excel_file_v2() -> Path:
         print(f"V2 파일이 없습니다. OneDrive에서 동기화 시도 중... (링크: {ONEDRIVE_SHARE_LINK_V2[:50]}...)")
         sync_onedrive_file(ONEDRIVE_SHARE_LINK_V2, FILE_PATH_V2, sync_interval=SYNC_INTERVAL, force_download=True)
         if FILE_PATH_V2.exists():
-            print(f"V2 파일 동기화 성공: {FILE_PATH_V2}")
+            _cached_file_path_v2 = FILE_PATH_V2
             return FILE_PATH_V2
         else:
             print(f"V2 파일 동기화 실패: {FILE_PATH_V2} 파일이 생성되지 않았습니다.")
@@ -584,7 +593,8 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
 
 
 def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
-    """V2 캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용합니다."""
+    """V2 캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용합니다.
+    성능 최적화: 캐시가 있을 때는 파일 존재 확인을 스킵합니다."""
     global _data_cache_v2, _cache_timestamp_v2
     
     # 캐시가 있고 TTL 내에 있으면 캐시 반환 (파일 수정 시간 체크 제거로 성능 향상)
@@ -601,6 +611,7 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
                     return cached
     
     # 캐시가 없거나 TTL이 지났으면 새로 로드
+    # 성능 최적화: load_summary_v2 내부에서 파일 경로 확인하므로 여기서는 호출만
     try:
         data = load_summary_v2(sheet_name)
         
@@ -721,16 +732,23 @@ def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
 
 
 def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
-    """V2 엑셀 파일에서 데이터를 로드하고 주차 정보를 포함하여 반환합니다."""
+    """V2 엑셀 파일에서 데이터를 로드하고 주차 정보를 포함하여 반환합니다.
+    성능 최적화: 파일 경로 캐싱으로 불필요한 파일 시스템 접근을 최소화합니다."""
     global VALUE_COLUMNS, DETAIL_VALUE_COLUMNS, WEEK1, WEEK2
     
     target_sheet = sheet_name or SHEET_NAME
     
-    # V2 파일 존재 확인 및 동기화
+    # V2 파일 존재 확인 및 동기화 (캐시된 경로 우선 사용)
     excel_path = ensure_excel_file_v2()
     
+    # 파일 존재 확인 (캐시된 경로가 있으면 이미 확인됨)
     if not excel_path.exists():
-        raise FileNotFoundError(f"V2 Excel file not found: {excel_path}")
+        # 파일이 없으면 캐시 초기화하고 다시 시도
+        global _cached_file_path_v2
+        _cached_file_path_v2 = None
+        excel_path = ensure_excel_file_v2()
+        if not excel_path.exists():
+            raise FileNotFoundError(f"V2 Excel file not found: {excel_path}")
     
     # 파일 유효성 검사 (ZIP 시그니처 확인)
     try:
@@ -1264,12 +1282,13 @@ def refresh_cache(_: bool = Depends(verify_password)) -> Dict[str, Any]:
 @app.post("/api/v2/refresh")
 def refresh_cache_v2(_: bool = Depends(verify_password)) -> Dict[str, Any]:
     """V2 캐시를 강제로 업데이트합니다. OneDrive에서 최신 파일을 가져와서 캐시를 갱신합니다."""
-    global _data_cache_v2, _cache_timestamp_v2
+    global _data_cache_v2, _cache_timestamp_v2, _cached_file_path_v2
     
     try:
         # V2 캐시 강제 초기화 및 재로드
         _data_cache_v2 = None
         _cache_timestamp_v2 = None
+        _cached_file_path_v2 = None  # 파일 경로 캐시도 초기화
         
         # 강제 동기화
         if ONEDRIVE_SHARE_LINK_V2:
