@@ -604,16 +604,22 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
             if sheet_name == "수량 기준":
                 cached = _data_cache_v2.get("quantity")
                 if cached and isinstance(cached, dict) and len(cached) > 0:
+                    print(f"[캐시 사용] V2 {sheet_name} 데이터 (캐시 나이: {cache_age:.1f}초)")
                     return cached
             elif sheet_name == "스타일수 기준":
                 cached = _data_cache_v2.get("style_count")
                 if cached and isinstance(cached, dict) and len(cached) > 0:
+                    print(f"[캐시 사용] V2 {sheet_name} 데이터 (캐시 나이: {cache_age:.1f}초)")
                     return cached
     
     # 캐시가 없거나 TTL이 지났으면 새로 로드
     # 성능 최적화: load_summary_v2 내부에서 파일 경로 확인하므로 여기서는 호출만
+    load_start_time = time.time()
+    print(f"[데이터 로드 시작] V2 {sheet_name} 데이터 로드 시작...")
     try:
         data = load_summary_v2(sheet_name)
+        load_time = time.time() - load_start_time
+        print(f"[데이터 로드 완료] V2 {sheet_name} 데이터 로드 완료 ({load_time:.2f}초)")
         
         # 데이터 유효성 검사 - V2 데이터가 비어있으면 에러
         if not data or len(data.get("nations", [])) == 0:
@@ -739,7 +745,11 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     target_sheet = sheet_name or SHEET_NAME
     
     # V2 파일 존재 확인 및 동기화 (캐시된 경로 우선 사용)
+    file_check_start = time.time()
     excel_path = ensure_excel_file_v2()
+    file_check_time = time.time() - file_check_start
+    if file_check_time > 1.0:
+        print(f"[파일 확인] V2 파일 확인 완료 ({file_check_time:.2f}초) - 경로: {excel_path}")
     
     # 파일 존재 확인 (캐시된 경로가 있으면 이미 확인됨)
     if not excel_path.exists():
@@ -775,7 +785,11 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     try:
         # read_only=True로 메모리 사용량 최소화
         # data_only=True로 먼저 시도 (계산된 값 읽기)
+        workbook_load_start = time.time()
+        print(f"[엑셀 파일 열기] 엑셀 파일 로드 시작... (경로: {excel_path})")
         workbook = openpyxl.load_workbook(excel_path, data_only=True, read_only=True, keep_links=False)
+        workbook_load_time = time.time() - workbook_load_start
+        print(f"[엑셀 파일 열기] 엑셀 파일 로드 완료 ({workbook_load_time:.2f}초)")
     except PermissionError as exc:
         error_msg = (
             f"엑셀 파일 V2에 접근할 수 없습니다. 파일이 다른 프로그램에서 열려있거나 "
@@ -1038,6 +1052,10 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
                 
         except Exception as e:
             suppliers_data = []
+        
+        data_extract_time = time.time() - data_extract_start
+        if data_extract_time > 1.0:
+            print(f"[데이터 추출] 데이터 추출 완료 ({data_extract_time:.2f}초)")
         
         result = {
             **data,
