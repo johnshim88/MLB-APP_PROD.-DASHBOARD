@@ -1053,10 +1053,6 @@ def load_summary_v2(sheet_name: Optional[str] = None) -> Dict[str, Any]:
         except Exception as e:
             suppliers_data = []
         
-        data_extract_time = time.time() - data_extract_start
-        if data_extract_time > 1.0:
-            print(f"[데이터 추출] 데이터 추출 완료 ({data_extract_time:.2f}초)")
-        
         result = {
             **data,
             "week_info": {
