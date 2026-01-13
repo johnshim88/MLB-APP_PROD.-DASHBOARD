@@ -595,7 +595,7 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
 
 def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
     """V2 캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용하며, 파일 수정 시간을 체크하여 파일이 변경되었으면 캐시를 무효화합니다."""
-    global _data_cache_v2, _cache_timestamp_v2, _cache_file_mtime_v2
+    global _data_cache_v2, _cache_timestamp_v2, _cache_file_mtime_v2, _cached_file_path_v2
     
     # 캐시가 있고 TTL 내에 있으면 파일 수정 시간 체크
     if _data_cache_v2 is not None and _cache_timestamp_v2 is not None:
