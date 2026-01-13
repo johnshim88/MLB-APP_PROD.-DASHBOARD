@@ -211,6 +211,7 @@ _cache_lock = threading.Lock()
 # V2 데이터 캐시 시스템
 _data_cache_v2: Optional[Dict[str, Any]] = None
 _cache_timestamp_v2: Optional[datetime] = None
+_cache_file_mtime_v2: Optional[float] = None  # 캐시된 파일의 수정 시간
 _cache_lock_v2 = threading.Lock()
 # V2 파일 경로 캐시 (성능 최적화: 파일 존재 확인 최소화)
 _cached_file_path_v2: Optional[Path] = None
@@ -593,24 +594,66 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
 
 
 def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
-    """V2 캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용합니다.
-    성능 최적화: 캐시가 있을 때는 파일 존재 확인을 스킵합니다."""
-    global _data_cache_v2, _cache_timestamp_v2
+    """V2 캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용하며, 파일 수정 시간을 체크하여 파일이 변경되었으면 캐시를 무효화합니다."""
+    global _data_cache_v2, _cache_timestamp_v2, _cache_file_mtime_v2
     
-    # 캐시가 있고 TTL 내에 있으면 캐시 반환 (파일 수정 시간 체크 제거로 성능 향상)
+    # 캐시가 있고 TTL 내에 있으면 파일 수정 시간 체크
     if _data_cache_v2 is not None and _cache_timestamp_v2 is not None:
         cache_age = (datetime.now() - _cache_timestamp_v2).total_seconds()
         if cache_age < CACHE_TTL_SECONDS:
-            if sheet_name == "수량 기준":
-                cached = _data_cache_v2.get("quantity")
-                if cached and isinstance(cached, dict) and len(cached) > 0:
-                    print(f"[캐시 사용] V2 {sheet_name} 데이터 (캐시 나이: {cache_age:.1f}초)")
-                    return cached
-            elif sheet_name == "스타일수 기준":
-                cached = _data_cache_v2.get("style_count")
-                if cached and isinstance(cached, dict) and len(cached) > 0:
-                    print(f"[캐시 사용] V2 {sheet_name} 데이터 (캐시 나이: {cache_age:.1f}초)")
-                    return cached
+            # 파일 수정 시간 체크 (파일이 변경되었으면 캐시 무효화)
+            try:
+                # 파일 경로 확인 (캐시된 경로가 있으면 사용, 없으면 찾기)
+                if _cached_file_path_v2 is not None and _cached_file_path_v2.exists():
+                    excel_path = _cached_file_path_v2
+                else:
+                    excel_path = ensure_excel_file_v2()
+                
+                # 파일 수정 시간 확인
+                current_mtime = excel_path.stat().st_mtime if excel_path.exists() else None
+                
+                # 파일이 변경되었으면 캐시 무효화
+                if current_mtime is not None and _cache_file_mtime_v2 is not None:
+                    if abs(current_mtime - _cache_file_mtime_v2) > 1.0:  # 1초 이상 차이 (파일이 변경됨)
+                        print(f"[캐시 무효화] 파일이 변경되었습니다. (이전: {_cache_file_mtime_v2}, 현재: {current_mtime})")
+                        _data_cache_v2 = None
+                        _cache_timestamp_v2 = None
+                        _cache_file_mtime_v2 = None
+                    else:
+                        # 캐시 사용
+                        if sheet_name == "수량 기준":
+                            cached = _data_cache_v2.get("quantity")
+                            if cached and isinstance(cached, dict) and len(cached) > 0:
+                                print(f"[캐시 사용] V2 {sheet_name} 데이터 (캐시 나이: {cache_age:.1f}초)")
+                                return cached
+                        elif sheet_name == "스타일수 기준":
+                            cached = _data_cache_v2.get("style_count")
+                            if cached and isinstance(cached, dict) and len(cached) > 0:
+                                print(f"[캐시 사용] V2 {sheet_name} 데이터 (캐시 나이: {cache_age:.1f}초)")
+                                return cached
+                elif _cache_file_mtime_v2 is None:
+                    # 파일 수정 시간이 캐시에 없으면 캐시 사용 (하위 호환성)
+                    if sheet_name == "수량 기준":
+                        cached = _data_cache_v2.get("quantity")
+                        if cached and isinstance(cached, dict) and len(cached) > 0:
+                            print(f"[캐시 사용] V2 {sheet_name} 데이터 (캐시 나이: {cache_age:.1f}초)")
+                            return cached
+                    elif sheet_name == "스타일수 기준":
+                        cached = _data_cache_v2.get("style_count")
+                        if cached and isinstance(cached, dict) and len(cached) > 0:
+                            print(f"[캐시 사용] V2 {sheet_name} 데이터 (캐시 나이: {cache_age:.1f}초)")
+                            return cached
+            except Exception as e:
+                # 파일 체크 실패 시 기존 캐시 사용 (하위 호환성)
+                print(f"[캐시 체크 오류] 파일 수정 시간 체크 실패, 기존 캐시 사용: {e}")
+                if sheet_name == "수량 기준":
+                    cached = _data_cache_v2.get("quantity")
+                    if cached and isinstance(cached, dict) and len(cached) > 0:
+                        return cached
+                elif sheet_name == "스타일수 기준":
+                    cached = _data_cache_v2.get("style_count")
+                    if cached and isinstance(cached, dict) and len(cached) > 0:
+                        return cached
     
     # 캐시가 없거나 TTL이 지났으면 새로 로드
     # 성능 최적화: load_summary_v2 내부에서 파일 경로 확인하므로 여기서는 호출만
@@ -627,7 +670,7 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
             print(f"Error: {error_msg}")
             raise ValueError(error_msg)
         
-        # 캐시 업데이트
+        # 캐시 업데이트 (파일 수정 시간도 함께 저장)
         with _cache_lock_v2:
             if _data_cache_v2 is None:
                 _data_cache_v2 = {}
@@ -636,6 +679,15 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
             elif sheet_name == "스타일수 기준":
                 _data_cache_v2["style_count"] = data
             _cache_timestamp_v2 = datetime.now()
+            # 파일 수정 시간도 저장
+            try:
+                if _cached_file_path_v2 is not None and _cached_file_path_v2.exists():
+                    _cache_file_mtime_v2 = _cached_file_path_v2.stat().st_mtime
+                else:
+                    excel_path = ensure_excel_file_v2()
+                    _cache_file_mtime_v2 = excel_path.stat().st_mtime if excel_path.exists() else None
+            except Exception:
+                _cache_file_mtime_v2 = None
         
         return data
     except FileNotFoundError as fnf_e:
@@ -1296,12 +1348,13 @@ def refresh_cache(_: bool = Depends(verify_password)) -> Dict[str, Any]:
 @app.post("/api/v2/refresh")
 def refresh_cache_v2(_: bool = Depends(verify_password)) -> Dict[str, Any]:
     """V2 캐시를 강제로 업데이트합니다. OneDrive에서 최신 파일을 가져와서 캐시를 갱신합니다."""
-    global _data_cache_v2, _cache_timestamp_v2, _cached_file_path_v2
+    global _data_cache_v2, _cache_timestamp_v2, _cache_file_mtime_v2, _cached_file_path_v2
     
     try:
         # V2 캐시 강제 초기화 및 재로드
         _data_cache_v2 = None
         _cache_timestamp_v2 = None
+        _cache_file_mtime_v2 = None  # 파일 수정 시간 캐시도 초기화
         _cached_file_path_v2 = None  # 파일 경로 캐시도 초기화
         
         # 강제 동기화
