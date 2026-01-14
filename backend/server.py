@@ -1485,29 +1485,25 @@ async def startup_event():
     if _data_cache is None:
         update_cache()
     
-    # V2 캐시 미리 로드 (서버 시작 시 warm-up으로 첫 요청 속도 개선)
+    # V2 캐시 미리 로드 (서버 시작 시 동기적으로 로드하여 첫 요청 속도 개선)
     print(f"[서버 시작] V2 캐시 미리 로드 중...")
     try:
-        # 백그라운드 스레드에서 로드하여 서버 시작 속도에 영향 없도록
-        def preload_v2_cache():
-            try:
-                # V2 파일이 있으면 캐시 미리 로드
-                if FILE_PATH_V2.exists() or (ONEDRIVE_SHARE_LINK_V2 and ensure_excel_file_v2()):
-                    print(f"[서버 시작] V2 캐시 warm-up 시작...")
-                    start_time = time.time()
-                    # 수량 기준과 스타일수 기준 모두 미리 로드
-                    get_cached_data_v2("수량 기준")
-                    get_cached_data_v2("스타일수 기준")
-                    elapsed = time.time() - start_time
-                    print(f"[서버 시작] V2 캐시 warm-up 완료 ({elapsed:.2f}초)")
-            except Exception as e:
-                print(f"[서버 시작] V2 캐시 warm-up 실패 (첫 요청 시 로드됨): {e}")
-        
-        # 백그라운드에서 비동기로 로드
-        preload_thread = threading.Thread(target=preload_v2_cache, daemon=True)
-        preload_thread.start()
+        # 동기적으로 로드하여 첫 요청 전에 캐시가 준비되도록 보장
+        # V2 파일이 있으면 캐시 미리 로드
+        if FILE_PATH_V2.exists() or (ONEDRIVE_SHARE_LINK_V2 and ensure_excel_file_v2()):
+            print(f"[서버 시작] V2 캐시 warm-up 시작...")
+            start_time = time.time()
+            # 수량 기준과 스타일수 기준 모두 미리 로드
+            get_cached_data_v2("수량 기준")
+            get_cached_data_v2("스타일수 기준")
+            elapsed = time.time() - start_time
+            print(f"[서버 시작] V2 캐시 warm-up 완료 ({elapsed:.2f}초) - 서버가 준비되었습니다.")
+        else:
+            print(f"[서버 시작] V2 파일이 없어 캐시 warm-up을 건너뜁니다.")
     except Exception as e:
-        print(f"[서버 시작] V2 캐시 warm-up 초기화 실패: {e}")
+        print(f"[서버 시작] V2 캐시 warm-up 실패 (첫 요청 시 로드됨): {e}")
+        import traceback
+        traceback.print_exc()
     
     # 백그라운드 스레드에서 매일 11시에 업데이트 체크 (엑셀 파일이 10시 30분~11시 사이에 업데이트됨)
     def background_update_check():
