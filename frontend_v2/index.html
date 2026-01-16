@@ -802,13 +802,31 @@
             headers['If-None-Match'] = cachedData._etag;
           }
           
+          // 타임아웃 설정 (30초)
+          const timeoutMs = 30000;
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => {
+            controller.abort();
+          }, timeoutMs);
+          
           // 성능 측정 시작
           const loadStartTime = performance.now();
-          const resp = await fetch(DATA_URL, {
-            headers: headers,
-            cache: 'no-cache',  // 브라우저 HTTP 캐시는 저장하지 않지만, 조건부 요청은 가능
-            method: 'GET'
-          });
+          let resp;
+          try {
+            resp = await fetch(DATA_URL, {
+              headers: headers,
+              cache: 'no-cache',  // 브라우저 HTTP 캐시는 저장하지 않지만, 조건부 요청은 가능
+              method: 'GET',
+              signal: controller.signal
+            });
+          } catch (fetchError) {
+            clearTimeout(timeoutId);
+            if (fetchError.name === 'AbortError') {
+              throw new Error(`요청 시간이 초과되었습니다 (${timeoutMs/1000}초). 서버가 응답하지 않거나 네트워크가 느립니다.`);
+            }
+            throw new Error(`네트워크 오류: ${fetchError.message}`);
+          }
+          clearTimeout(timeoutId);
           
           if (!resp.ok) {
             const errorText = await resp.text();

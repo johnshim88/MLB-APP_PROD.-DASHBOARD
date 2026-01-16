@@ -802,12 +802,30 @@
             headers['If-None-Match'] = cachedData._etag;
           }
           
+          // 타임아웃 설정 (30초)
+          const timeoutMs = 30000;
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => {
+            controller.abort();
+          }, timeoutMs);
+          
           console.log("데이터 로드 시도:", DATA_URL);
-          const resp = await fetch(DATA_URL, {
-            headers: headers,
-            cache: 'no-cache',  // 브라우저 HTTP 캐시는 저장하지 않지만, 조건부 요청은 가능
-            method: 'GET'
-          });
+          let resp;
+          try {
+            resp = await fetch(DATA_URL, {
+              headers: headers,
+              cache: 'no-cache',  // 브라우저 HTTP 캐시는 저장하지 않지만, 조건부 요청은 가능
+              method: 'GET',
+              signal: controller.signal
+            });
+          } catch (fetchError) {
+            clearTimeout(timeoutId);
+            if (fetchError.name === 'AbortError') {
+              throw new Error(`요청 시간이 초과되었습니다 (${timeoutMs/1000}초). 서버가 응답하지 않거나 네트워크가 느립니다.`);
+            }
+            throw new Error(`네트워크 오류: ${fetchError.message}`);
+          }
+          clearTimeout(timeoutId);
           
           if (!resp.ok) {
             const errorText = await resp.text();
@@ -816,6 +834,13 @@
               document.getElementById("login-overlay").classList.remove("hidden");
               document.getElementById("dashboard-content").classList.add("hidden");
               throw new Error("인증이 만료되었습니다. 다시 로그인해주세요.");
+            } else if (resp.status === 404) {
+              // V2 파일이 없는 경우
+              throw new Error("V2 파일을 찾을 수 없습니다. 서버 관리자에게 문의하세요. (404)");
+            } else if (resp.status === 500) {
+              // 서버 에러 - 더 자세한 정보 표시
+              console.error("서버 에러 상세:", errorText);
+              throw new Error(`서버 오류가 발생했습니다. (500)\n\n에러 상세: ${errorText.substring(0, 200)}\n\n서버 로그를 확인하세요.`);
             }
             throw new Error(`데이터를 불러올 수 없습니다. (${resp.status}: ${errorText.substring(0, 100)})`);
           }
