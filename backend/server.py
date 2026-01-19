@@ -217,8 +217,9 @@ _cache_lock_v2 = threading.Lock()
 _cached_file_path_v2: Optional[Path] = None
 # 마지막 파일 수정 시간 체크 타임스탬프 (성능 최적화: 파일 체크 빈도 감소)
 _last_file_check_v2: Optional[datetime] = None
-# 파일 체크 간격 (초) - 5분마다 한 번만 파일 수정 시간 체크
-FILE_CHECK_INTERVAL_SECONDS = 300  # 5분
+# 파일 체크 간격 (초) - 평소에는 5분, 월요일 오전에는 1분 (주차 변경 시점 감지)
+FILE_CHECK_INTERVAL_SECONDS = 300  # 기본 5분
+FILE_CHECK_INTERVAL_MONDAY_SECONDS = 60  # 월요일 오전 (0시~12시) 1분
 # 캐시 TTL (초) - 24시간간 캐시 유지 (엑셀 파일이 하루에 한 번만 업데이트되므로 긴 캐시로 성능 최적화)
 CACHE_TTL_SECONDS = 86400  # 24시간 (하루)
 
@@ -606,12 +607,17 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
         cache_age = (datetime.now() - _cache_timestamp_v2).total_seconds()
         if cache_age < CACHE_TTL_SECONDS:
             # 파일 수정 시간 체크는 주기적으로만 수행 (성능 최적화)
+            # 월요일 오전에는 더 자주 체크하여 주차 변경을 빠르게 감지
+            now = datetime.now()
+            is_monday_morning = now.weekday() == 0 and now.hour < 12  # 월요일 0~11시
+            check_interval_threshold = FILE_CHECK_INTERVAL_MONDAY_SECONDS if is_monday_morning else FILE_CHECK_INTERVAL_SECONDS
+            
             should_check_file = False
             if _last_file_check_v2 is None:
                 should_check_file = True
             else:
-                check_interval = (datetime.now() - _last_file_check_v2).total_seconds()
-                if check_interval >= FILE_CHECK_INTERVAL_SECONDS:
+                check_interval = (now - _last_file_check_v2).total_seconds()
+                if check_interval >= check_interval_threshold:
                     should_check_file = True
             
             # 파일 체크가 필요한 경우에만 수행
