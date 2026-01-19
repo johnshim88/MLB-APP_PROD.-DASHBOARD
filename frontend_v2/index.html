@@ -457,10 +457,13 @@
         warning: "#fca5a5",
       };
 
-      const fmt = new Intl.NumberFormat("ko-KR");
+      const fmt = new Intl.NumberFormat("ko-KR", {
+        maximumFractionDigits: 0,  // 소수점 없이 정수로만 표시
+      });
       const pct = new Intl.NumberFormat("ko-KR", {
         style: "percent",
-        minimumFractionDigits: 1,
+        minimumFractionDigits: 0,  // 퍼센트도 정수로 표시
+        maximumFractionDigits: 0,
       });
 
       const charts = {};
@@ -742,8 +745,8 @@
         if (datasetIndex === 1 && chart.data.datasets[0]) {
           const targetValue = chart.data.datasets[0].data[dataIndex] ?? 0;
           if (targetValue > 0) {
-            const progressPct = (value / targetValue) * 100;
-            return `${qty} (${progressPct.toFixed(1)}%)`;
+            const progressPct = Math.round((value / targetValue) * 100);  // 정수로 반올림
+            return `${qty} (${progressPct}%)`;
           }
         }
         
@@ -1226,7 +1229,7 @@
           ctx.fillStyle = '#5f6b7c';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          const targetProgressText = `(목표 대비 진행률: ${targetProgressPct.toFixed(1)}%)`;
+          const targetProgressText = `(목표 대비 진행률: ${Math.round(targetProgressPct)}%)`;  // 정수로 반올림
           ctx.fillText(targetProgressText, centerX, centerY + 45);
           
           ctx.restore();
