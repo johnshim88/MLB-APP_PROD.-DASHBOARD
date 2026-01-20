@@ -599,70 +599,22 @@ def get_cached_data(sheet_name: str) -> Dict[str, Any]:
 
 
 def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
-    """V2 캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용하며, 파일 수정 시간을 주기적으로 체크하여 파일이 변경되었으면 캐시를 무효화합니다."""
+    """V2 캐시된 데이터를 반환합니다. TTL 기반 캐시를 사용합니다 (파일 수정 시간 체크 제거로 성능 향상)."""
     global _data_cache_v2, _cache_timestamp_v2, _cache_file_mtime_v2, _cached_file_path_v2, _last_file_check_v2
     
-    # 캐시가 있고 TTL 내에 있으면 캐시 반환 (파일 체크는 주기적으로만 수행)
+    # 캐시가 있고 TTL 내에 있으면 캐시 반환 (파일 수정 시간 체크 제거로 성능 향상)
     if _data_cache_v2 is not None and _cache_timestamp_v2 is not None:
         cache_age = (datetime.now() - _cache_timestamp_v2).total_seconds()
         if cache_age < CACHE_TTL_SECONDS:
-            # 파일 수정 시간 체크는 주기적으로만 수행 (성능 최적화)
-            # 월요일 오전에는 더 자주 체크하여 주차 변경을 빠르게 감지
-            now = datetime.now()
-            is_monday_morning = now.weekday() == 0 and now.hour < 12  # 월요일 0~11시
-            check_interval_threshold = FILE_CHECK_INTERVAL_MONDAY_SECONDS if is_monday_morning else FILE_CHECK_INTERVAL_SECONDS
-            
-            should_check_file = False
-            if _last_file_check_v2 is None:
-                should_check_file = True
-            else:
-                check_interval = (now - _last_file_check_v2).total_seconds()
-                if check_interval >= check_interval_threshold:
-                    should_check_file = True
-            
-            # 파일 체크가 필요한 경우에만 수행
-            if should_check_file:
-                try:
-                    # 파일 경로 확인 (캐시된 경로가 있으면 사용, 없으면 찾기)
-                    if _cached_file_path_v2 is not None and _cached_file_path_v2.exists():
-                        excel_path = _cached_file_path_v2
-                    else:
-                        excel_path = ensure_excel_file_v2()
-                    
-                    # 파일 수정 시간 확인
-                    if excel_path.exists():
-                        current_mtime = excel_path.stat().st_mtime
-                        
-                        # 파일이 변경되었으면 캐시 무효화
-                        if _cache_file_mtime_v2 is not None:
-                            if abs(current_mtime - _cache_file_mtime_v2) > 1.0:  # 1초 이상 차이 (파일이 변경됨)
-                                print(f"[캐시 무효화] 파일이 변경되었습니다. (이전: {_cache_file_mtime_v2}, 현재: {current_mtime})")
-                                _data_cache_v2 = None
-                                _cache_timestamp_v2 = None
-                                _cache_file_mtime_v2 = None
-                                _last_file_check_v2 = None
-                                # 파일이 변경되었으므로 재로드 필요
-                            else:
-                                # 파일이 변경되지 않았으므로 마지막 체크 시간만 업데이트
-                                _last_file_check_v2 = datetime.now()
-                    else:
-                        # 파일이 없으면 마지막 체크 시간만 업데이트
-                        _last_file_check_v2 = datetime.now()
-                except Exception as e:
-                    # 파일 체크 실패 시 마지막 체크 시간만 업데이트하고 캐시 사용
-                    _last_file_check_v2 = datetime.now()
-                    print(f"[캐시 체크 오류] 파일 수정 시간 체크 실패, 기존 캐시 사용: {e}")
-            
-            # 캐시가 유효하면 반환 (파일 체크 결과와 관계없이)
-            if _data_cache_v2 is not None:
-                if sheet_name == "수량 기준":
-                    cached = _data_cache_v2.get("quantity")
-                    if cached and isinstance(cached, dict) and len(cached) > 0:
-                        return cached
-                elif sheet_name == "스타일수 기준":
-                    cached = _data_cache_v2.get("style_count")
-                    if cached and isinstance(cached, dict) and len(cached) > 0:
-                        return cached
+            # 파일 체크 없이 바로 캐시 반환
+            if sheet_name == "수량 기준":
+                cached = _data_cache_v2.get("quantity")
+                if cached and isinstance(cached, dict) and len(cached) > 0:
+                    return cached
+            elif sheet_name == "스타일수 기준":
+                cached = _data_cache_v2.get("style_count")
+                if cached and isinstance(cached, dict) and len(cached) > 0:
+                    return cached
     
     # 캐시가 없거나 TTL이 지났으면 새로 로드
     # 성능 최적화: load_summary_v2 내부에서 파일 경로 확인하므로 여기서는 호출만
@@ -688,18 +640,15 @@ def get_cached_data_v2(sheet_name: str) -> Dict[str, Any]:
             elif sheet_name == "스타일수 기준":
                 _data_cache_v2["style_count"] = data
             _cache_timestamp_v2 = datetime.now()
-            # 파일 수정 시간도 저장
+            # 파일 수정 시간도 저장 (수동 새로고침 시 참조용)
             try:
                 if _cached_file_path_v2 is not None and _cached_file_path_v2.exists():
                     _cache_file_mtime_v2 = _cached_file_path_v2.stat().st_mtime
                 else:
                     excel_path = ensure_excel_file_v2()
                     _cache_file_mtime_v2 = excel_path.stat().st_mtime if excel_path.exists() else None
-                # 파일 수정 시간을 저장했으므로 마지막 체크 시간도 업데이트
-                _last_file_check_v2 = datetime.now()
             except Exception:
                 _cache_file_mtime_v2 = None
-                _last_file_check_v2 = datetime.now()
         
         return data
     except FileNotFoundError as fnf_e:
