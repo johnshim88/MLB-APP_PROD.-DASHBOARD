@@ -1830,20 +1830,37 @@
           const summaryCells = data.summary_cells || {};
           const suppliers = data.suppliers || [];
           
-          // 차트 렌더링 (병렬 처리 불가하지만 순서 최적화)
+          // 차트 렌더링 최적화: 즉시 보이는 차트부터 렌더링
           updateWeekLabels();
           updateKpis(totalRow, summaryCells);
           
-          // 큰 차트부터 먼저 렌더링 (사용자가 먼저 보게)
+          // 가장 중요한 차트는 즉시 렌더링 (사용자가 먼저 보게)
           renderDonut(totalRow, summaryCells);
-          renderNations(nations);
-          renderItems(items);
           
-          // 작은 차트는 나중에 렌더링 (사용자가 스크롤하면서 볼 수 있음)
-          requestAnimationFrame(() => {
-            renderSubcategoryChart(subcategories);
-            renderSuppliers(suppliers);
-          });
+          // 나머지 차트는 requestIdleCallback으로 병렬 렌더링 (브라우저가 유휴 시간에 처리)
+          if ('requestIdleCallback' in window) {
+            // 국가별, 아이템별 차트는 우선순위 높게 (화면 상단에 보임)
+            requestIdleCallback(() => {
+              renderNations(nations);
+              renderItems(items);
+            }, { timeout: 100 });
+            
+            // 세부 복종별, 협력사별 차트는 낮은 우선순위 (스크롤해야 보임)
+            requestIdleCallback(() => {
+              renderSubcategoryChart(subcategories);
+              renderSuppliers(suppliers);
+            }, { timeout: 2000 });
+          } else {
+            // requestIdleCallback 미지원 브라우저는 기존 방식 사용
+            requestAnimationFrame(() => {
+              renderNations(nations);
+              renderItems(items);
+              requestAnimationFrame(() => {
+                renderSubcategoryChart(subcategories);
+                renderSuppliers(suppliers);
+              });
+            });
+          }
           
           const renderTime = (performance.now() - renderStartTime).toFixed(0);
           console.log(`대시보드 렌더링 완료 (${renderTime}ms)`);

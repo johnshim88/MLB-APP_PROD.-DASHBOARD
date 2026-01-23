@@ -682,7 +682,7 @@ def load_summary(sheet_name: Optional[str] = None) -> Dict[str, Any]:
     workbook = None
     try:
         # read_only=True로 메모리 사용량 최소화
-        workbook = openpyxl.load_workbook(excel_path, data_only=True, read_only=True, keep_links=False)
+        workbook = openpyxl.load_workbook(excel_path, data_only=True, read_only=True, keep_links=False, keep_vba=False)
     except PermissionError as exc:
         error_msg = (
             f"엑셀 파일에 접근할 수 없습니다. 파일이 다른 프로그램에서 열려있거나 "
@@ -1139,7 +1139,7 @@ def list_sheets() -> Dict[str, Any]:
     try:
         excel_path = ensure_excel_file()
         
-        workbook = openpyxl.load_workbook(excel_path, read_only=True)
+        workbook = openpyxl.load_workbook(excel_path, read_only=True, keep_vba=False)
         sheets = workbook.sheetnames
         workbook.close()
         
